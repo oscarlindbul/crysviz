@@ -1,6 +1,7 @@
 import { Field } from './Field.js';
 import { computeFieldStats } from './CompositeField.js';
 import { runNci } from '../workers/nciTasks.js';
+import { NCI_DEFAULTS } from '../math/nci-backend-wasm.js';
 import { invert3x3, transpose3x3, fracToCartPoint, cartToFractional } from '../math/index.js';
 
 /**
@@ -286,6 +287,10 @@ export async function createNciFields(sourceField, { kind, structure = null, cat
     isoValue: NCI_S_ISOVALUE,
     valueUnit: null, // s is dimensionless
     periodic,
+    // Points outside the density window come back as s = sCap. Masking them
+    // keeps the surface from closing off in walls where the window ends
+    // (Jmol leaves those points NaN and skips the cubes touching them).
+    maskValue: Number.isFinite(params?.sCap) ? params.sCap : NCI_DEFAULTS.sCap,
     colorBy: {
       field: colourField,
       colormap: 'bgyor',

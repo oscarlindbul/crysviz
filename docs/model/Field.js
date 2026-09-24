@@ -4,7 +4,7 @@ export class Field {
    *   values?:any, component?:number, isoValue?:number, absMinValue?:any,
    *   absMaxValue?:any, minValue?:any, maxValue?:any, label?:string,
    *   useAbsoluteIsoValue?:any, isVisible?:boolean, valueUnit?:string|null,
-   *   periodic?:boolean,
+   *   periodic?:boolean, maskValue?:number|null,
    *   colorBy?:{field: Field, colormap: string, min: number, max: number}|null}} [opts]
    */
   constructor({
@@ -25,6 +25,7 @@ export class Field {
     isVisible = true, // whether this field should be rendered (can be toggled by user)
     valueUnit = null, // unit of the values, e.g. 'e/bohr³' or 'e/Å³'; null = unknown / not a density
     periodic = true, // whether the grid wraps (index n ≡ index 0), as for a crystal cell
+    maskValue = null, // grid points at or above this value are "no data" for the isosurface
     colorBy = null // colour this field's isosurface per vertex by another field (see below)
   } = {}) {
     this.nx = nx;
@@ -57,6 +58,13 @@ export class Field {
     // and whose boundary layer has no neighbours beyond it.
     /** @type {boolean} */
     this.periodic = periodic !== false;
+
+    // Values at or above this mark grid points that carry no data: the
+    // isosurface skips every cube touching one instead of closing the surface
+    // against them. The NCI s field (model/NciField.js) marks the points
+    // outside its density window this way, as Jmol does with NaN. Null = none.
+    /** @type {number | null} */
+    this.maskValue = Number.isFinite(maskValue) ? maskValue : null;
 
     // Per-vertex colouring of this field's isosurface by another field on the
     // same grid: the other field is sampled at each vertex and mapped through

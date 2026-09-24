@@ -81,6 +81,10 @@ class MarchingCubesWrapper {
             backend_MC = new MarchingCubesModule.MarchingCubes(field.nx, field.ny, field.nz);
             const fieldPtr = backend_MC.getField();
             MarchingCubesModule.HEAPF32.set(field.values, fieldPtr >> 2);
+            // Field.maskValue: cubes touching a point at or above it are not
+            // meshed (the NCI s field marks points outside its density window
+            // this way). The THREE backend has no equivalent and ignores it.
+            if (Number.isFinite(field.maskValue)) backend_MC.setMaskValue(field.maskValue);
             console.log("Using WASM-based Marching Cubes");
         } else if (backend === MarchingCubesBackend.THREE) {
             backend_MC = new ThreeMarchingCubes.MarchingCubes([field.nx, field.ny, field.nz], false, false, field.nx*field.ny*field.nz);

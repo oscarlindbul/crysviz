@@ -472,6 +472,14 @@ public:
 	float* color_field = nullptr;
 	float* vvalue_list = nullptr;
 
+	// Optional mask: a cube with any corner value >= mask_value produces no
+	// triangles. Jmol marks NCI grid points outside the density window as NaN
+	// and skips every cube touching one; without the same rule the surface of s
+	// closes off in artificial walls wherever the window ends (s jumps from its
+	// real value to the excluded marker). Off (+inf) by default.
+	float mask_value = INFINITY;
+	bool has_mask = false;
+
 	MarchingCubes(unsigned int resx, unsigned int resy, unsigned int resz, uintptr_t field_data, uintptr_t cache_data)
 			: MarchingCubes(resx, resy, resz) {
 		this->field = reinterpret_cast<float*>(field_data); // use provided field data (assumed to be pre-allocated and filled, and not owned by this class, so no free in destructor)
@@ -534,6 +542,11 @@ public:
 	}
 	uintptr_t get_vertex_values() {
 		return reinterpret_cast<uintptr_t>(vvalue_list);
+	}
+
+	void set_mask_value(float value) {
+		has_mask = std::isfinite(value);
+		mask_value = has_mask ? value : INFINITY;
 	}
 
 	uintptr_t get_field() {
@@ -766,6 +779,14 @@ public:
 
 					if (cube_index == 0 || cube_index == 255) continue; // skip empty cubes
 
+					if (has_mask) {
+						bool masked = false;
+						for (int c = 0; c < 8; c++) {
+							if (field[cube_points[c]] >= mask_value) { masked = true; break; }
+						}
+						if (masked) continue;
+					}
+
 					edge_flags = edgeTable[cube_index];
 
 					// add new vertices and normals to list for current cube
@@ -836,5 +857,6 @@ EMSCRIPTEN_BINDINGS(marching_cubes_module) {
 		.function("getColorFieldEnabled", &MarchingCubes::get_color_field_enabled)
 		.function("getColorField", &MarchingCubes::get_color_field)
 		.function("getVertexValues", &MarchingCubes::get_vertex_values)
+		.function("setMaskValue", &MarchingCubes::set_mask_value)
 		.function("updateVertices", &MarchingCubes::update_vertices);
 }
