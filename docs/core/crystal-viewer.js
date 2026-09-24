@@ -7,6 +7,7 @@
 // .........................................................................................................
 
 import { measurements,app,fileBrowser, general} from '../state/store.js';
+import { startFieldTask, nextPaint } from '../state/fieldTasks.js';
 import {defaultPOSCAR4} from '../defaults/structure_defaults.js'
 
 // import from the old file structure that need to be combined and ported to the new structure
@@ -360,7 +361,18 @@ async function updateHostLattice(lattice) {
   return true;
 }
 
+/** Formats whose whole grid is read and parsed on load, so a large file is
+ *  worth the progress bar under the field list (state/fieldTasks.js). A
+ *  WAVECAR is not: only its headers are read here. */
+const EAGER_FIELD_FORMATS = new Set(['cube', 'chgcar', 'elfcar']);
+
+/** Files at least this large show the bar at once: parsing blocks the main
+ *  thread, so the bar's usual show delay could not elapse. */
+const LARGE_FIELD_FILE_BYTES = 20 * 1024 * 1024;
+
 export async function loadStructure(content, fileName = '', isDefault = false, format = '') {
+  /** @type {import('../state/fieldTasks.js').FieldTask | null} */
+  let fieldTask = null;
   try {
 
     const parserFileName = format && !String(fileName).toLowerCase().endsWith(`.${String(format).toLowerCase()}`)
@@ -380,9 +392,22 @@ export async function loadStructure(content, fileName = '', isDefault = false, f
     const head = await source.readHead(HEAD_BYTES);
     const descriptor = detectFormat({ fileName: parserFileName, head });
 
+    // Only visible when a field panel is already open (a second volumetric
+    // file); the first one opens the panel once it has loaded.
+    if (EAGER_FIELD_FORMATS.has(descriptor.id)) {
+      const large = (source.size ?? 0) >= LARGE_FIELD_FILE_BYTES;
+      fieldTask = startFieldTask(`Loading ${fileName}`, { immediate: large });
+      fieldTask.setStage('reading file', 0, 0.3);
+    }
+
     // Text formats get the whole file as a string exactly as before; .traj gets
     // an ArrayBuffer; WAVECAR gets the FileSource itself and reads byte ranges.
     const payload = await materialize(source, descriptor);
+
+    if (fieldTask) {
+      fieldTask.setStage('parsing and building isosurface', 0.3, 0.95);
+      if (fieldTask.immediate) await nextPaint();
+    }
 
     switch (descriptor.id) {
       case 'crysviz':
@@ -494,8 +519,10 @@ export async function loadStructure(content, fileName = '', isDefault = false, f
       showLoadWarningModal({ fileName, message: warnings[0] });
     }
 
+    fieldTask?.done();
     return { ok: true, container: structureContainer, name: fileName, format: format || undefined };
   } catch (error) {
+    fieldTask?.fail();
     // Single choke point for every load path and every format: surface a
     // visible warning instead of failing silently. The status line is kept as
     // a secondary, non-blocking trace.

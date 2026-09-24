@@ -1349,6 +1349,71 @@
 /* NCI analysis block under the field list (ui/NciControls.js). The two buttons
    are .file-action-btn .planes-calc-btn, which already wrap their labels and
    share a row; this only lays out the heading, the row and the status line. */
+/* Progress bar under the field list (ui/FieldProgressWidget.js): one row per
+   long-running field task, shown only while one runs. */
+.field-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: var(--sp-2) 0;
+}
+
+.field-progress[hidden] {
+  display: none;
+}
+
+.field-progress-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  transition: opacity 0.5s ease;
+}
+
+.field-progress-row-done,
+.field-progress-row-failed {
+  opacity: 0;
+}
+
+.field-progress-label {
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+}
+
+.field-progress-bar {
+  appearance: none;
+  width: 100%;
+  height: 4px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: var(--track-bg);
+  overflow: hidden;
+}
+
+.field-progress-bar::-webkit-progress-bar {
+  background: var(--track-bg);
+  border-radius: var(--radius-sm);
+}
+
+.field-progress-bar::-webkit-progress-value {
+  background: var(--highlight-color);
+  border-radius: var(--radius-sm);
+  transition: width 0.1s linear;
+}
+
+.field-progress-bar::-moz-progress-bar {
+  background: var(--highlight-color);
+  border-radius: var(--radius-sm);
+}
+
+.field-progress-row-failed .field-progress-bar::-webkit-progress-value {
+  background: var(--warn);
+}
+
+.field-progress-row-failed .field-progress-bar::-moz-progress-bar {
+  background: var(--warn);
+}
+
 .nci-controls {
   display: flex;
   flex-direction: column;

@@ -3,6 +3,7 @@ import {
   SpinorComponent,
   WaveQuantity,
 } from '../math/wave-backend-wasm.js';
+import { runFieldTask } from '../state/fieldTasks.js';
 
 /**
  * The tree of fields a file offers, and which of them are actually loaded.
@@ -106,14 +107,32 @@ export class FieldCatalogNode {
     if (!this._load) throw new Error(`Field "${this.label}" cannot be loaded on demand`);
     if (this._pending) return this._pending;
 
+    // Reported to the progress bar under the field list; a quick load (a
+    // cached G-vector set, a small grid) finishes inside the bar's show delay
+    // and never shows.
     this._pending = (async () => {
       try {
-        return await this._load();
+        return await runFieldTask(this._taskLabel(), (task) => {
+          task.setStage('reading and transforming', 0, 0.9);
+          return this._load();
+        });
       } finally {
         this._pending = null;
       }
     })();
     return this._pending;
+  }
+
+  /** "Loading k-point 3, band 12" for a WAVECAR leaf, whose own label is only
+   *  "Band 12" (or a spinor component) under its k-point group. */
+  _taskLabel() {
+    const m = this.meta;
+    if (m && Number.isFinite(m.kpt) && Number.isFinite(m.band)) {
+      const spin = m.spin > 1 ? `spin ${m.spin}, ` : '';
+      const spinor = m.spinor !== undefined ? ` ${this.label}` : '';
+      return `Loading ${spin}k-point ${m.kpt}, band ${m.band}${spinor}`;
+    }
+    return `Loading ${this.label}`;
   }
 
   /** Depth-first walk including this node. */

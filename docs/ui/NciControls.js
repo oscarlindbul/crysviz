@@ -1,5 +1,6 @@
 import { createNciFields } from '../model/NciField.js';
 import { createInfoButton } from './InfoPanel.js';
+import { startFieldTask, isLargeField, nextPaint } from '../state/fieldTasks.js';
 
 /**
  * The "NCI analysis" block under the field list (ui/FieldPanel.js).
@@ -175,16 +176,26 @@ export function createNciControls({
     publish({
       busy: true,
       catalog,
-      status: kind === 'scf'
-        ? `Computing SCF-NCI on "${field.label}"…`
-        : 'Computing promolecular NCI…',
+      // Progress shows in the bar under the field list; clearing the line
+      // here drops the previous run's summary while this one computes.
+      status: '',
       tone: 'info',
     });
     const started = performance.now();
+    // The progress bar under the field list. The calculation is one worker
+    // call with no intermediate reports, so the bar creeps through it; the
+    // isosurface that follows is built on the main thread, so on a large grid
+    // the bar is painted before that step blocks.
+    const large = isLargeField(field);
+    const task = startFieldTask(kind === 'scf' ? `SCF-NCI of "${field.label}"` : 'Promolecular NCI',
+      { immediate: large });
     try {
+      task.setStage('computing s and sign(λ₂)ρ', 0, 0.8);
       const { sField, colourField, info } = await createNciFields(field, {
         kind, structure, catalog,
       });
+      task.setStage('building isosurface', 0.85, 0.98);
+      if (large) await nextPaint();
       // The colour field first, so the s field it colours is the last entry of
       // the Derived group and the one the list scrolls to.
       catalog.addDerivedField(colourField);
@@ -192,7 +203,9 @@ export function createNciControls({
       const { text, tone } = describeResult(info, (performance.now() - started) / 1000);
       publish({ busy: false, status: text, tone });
       onFieldsCreated(sField, { colourField, info });
+      task.done();
     } catch (error) {
+      task.fail();
       publish({ busy: false, status: '', tone: 'info' });
       reportError(error instanceof Error ? error : new Error(String(error)));
     }

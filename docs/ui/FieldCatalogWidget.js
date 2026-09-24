@@ -2,6 +2,8 @@ import { NodeKind } from '../model/FieldCatalog.js';
 import { combineFields } from '../model/CompositeField.js';
 import { WAVE_QUANTITY_LABELS } from '../math/wave-backend-wasm.js';
 import { createInfoButton } from './InfoPanel.js';
+import { createFieldProgressWidget } from './FieldProgressWidget.js';
+import { runFieldTask, isLargeField, nextPaint } from '../state/fieldTasks.js';
 
 /**
  * The field selector.
@@ -97,6 +99,9 @@ export function createFieldCatalogWidget({ container, catalog, selectedField, on
   treeEl.setAttribute('role', 'tree');
   container.appendChild(treeEl);
 
+  // Directly under the list: band loads and derived-field work report here.
+  const progressWidget = createFieldProgressWidget(container);
+
   const derivedEl = document.createElement('div');
   derivedEl.className = 'field-catalog-derived';
   container.appendChild(derivedEl);
@@ -112,6 +117,7 @@ export function createFieldCatalogWidget({ container, catalog, selectedField, on
   return {
     destroy() {
       unsubscribe();
+      progressWidget.destroy();
       container.innerHTML = '';
       container.classList.remove('field-catalog');
     },
@@ -451,7 +457,7 @@ export function createFieldCatalogWidget({ container, catalog, selectedField, on
     build.type = 'button';
     build.className = 'field-catalog-derived-build';
     build.textContent = 'Create field';
-    build.addEventListener('click', () => {
+    build.addEventListener('click', async () => {
       const chosen = terms
         .map(({ field, input }) => ({ field, weight: Number(input.value) }))
         .filter((t) => Number.isFinite(t.weight) && t.weight !== 0);
@@ -460,14 +466,32 @@ export function createFieldCatalogWidget({ container, catalog, selectedField, on
         reportError(new Error('Set a non-zero weight on at least one field.'));
         return;
       }
+      const label = nameInput.value.trim() || undefined;
+      // Combining and meshing are synchronous, so on a large grid the bar is
+      // shown at once and painted before each step blocks the main thread. A
+      // small grid runs straight through, as before.
+      const large = chosen.some((t) => isLargeField(t.field));
+      build.disabled = true;
       try {
-        // Throws on a grid mismatch — combining a WAVECAR band with a CHGCAR
-        // grid, say — which is a real error rather than something to paper over.
-        const combined = combineFields(chosen, { label: nameInput.value.trim() || undefined });
-        catalog.addDerivedField(combined);
-        select(combined);
+        await runFieldTask(`Combining ${chosen.length} field${chosen.length === 1 ? '' : 's'}`, async (task) => {
+          if (large) {
+            task.setStage('adding values', 0, 0.4);
+            await nextPaint();
+          }
+          // Throws on a grid mismatch — combining a WAVECAR band with a CHGCAR
+          // grid, say — which is a real error rather than something to paper over.
+          const combined = combineFields(chosen, { label });
+          if (large) {
+            task.setStage('building isosurface', 0.45, 0.95);
+            await nextPaint();
+          }
+          catalog.addDerivedField(combined);
+          select(combined);
+        }, { immediate: large });
       } catch (error) {
         reportError(error);
+      } finally {
+        build.disabled = false;
       }
     });
     actions.appendChild(build);
