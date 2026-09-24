@@ -43,6 +43,20 @@ WAVE_EXPORTED_FUNCTIONS := \
 WAVE_EXPORTED_RUNTIME := \
 	["ccall","cwrap","HEAPF64","HEAPF32","HEAP32"]
 
+# NCI (non-covalent interaction) analysis: reduced density gradient and
+# sign(lambda2)*rho from a density grid (finite differences) or from
+# promolecular atomic densities. Separate and lazily loaded like the wave
+# module: only the NCI buttons in the field panel need it.
+NCI_SRC := nci_backend.c
+NCI_JS_OUT := nci_backend.js
+NCI_WASM_OUT := nci_backend.wasm
+
+NCI_EXPORTED_FUNCTIONS := \
+	["_malloc","_free","_nci_scf","_nci_promolecular","_nci_promolecular_density","_nci_sym3_eigvals"]
+
+NCI_EXPORTED_RUNTIME := \
+	["HEAPF64","HEAPF32","HEAP32"]
+
 # Marching-cubes isosurface extraction (Paul Bourke's polygonisation) plus the
 # default-isovalue histogram the field panel starts from. Uses embind rather
 # than plain exported functions -- it hands JS a class, not a function table --
@@ -51,13 +65,15 @@ MC_SRC := marching_cubes.cpp
 MC_JS_OUT := MarchCubes.js
 MC_WASM_OUT := MarchCubes.wasm
 
-.PHONY: all wasm wasm-wave wasm-marching-cubes clean
+.PHONY: all wasm wasm-wave wasm-nci wasm-marching-cubes clean
 
-all: wasm wasm-wave wasm-marching-cubes
+all: wasm wasm-wave wasm-nci wasm-marching-cubes
 
 wasm: $(JS_OUT)
 
 wasm-wave: $(WAVE_JS_OUT)
+
+wasm-nci: $(NCI_JS_OUT)
 
 wasm-marching-cubes: $(MC_JS_OUT)
 
@@ -89,6 +105,22 @@ $(WAVE_JS_OUT): $(WAVE_SRC)
 		-s EXPORTED_RUNTIME_METHODS='$(WAVE_EXPORTED_RUNTIME)' \
 		-o $(WAVE_JS_OUT)
 
+# Same flags as the wave module. The node environment is what lets
+# tools/unittest/nci.test.mjs load it; like wave_backend.js the glue carries no
+# @ts-nocheck banner because nci_backend.d.ts shadows it.
+$(NCI_JS_OUT): $(NCI_SRC)
+	$(EMCC) $(CFLAGS) $(NCI_SRC) \
+		-s WASM=1 \
+		-s MODULARIZE=1 \
+		-s EXPORT_ES6=1 \
+		-s EXPORT_NAME=NciBackend \
+		-s ENVIRONMENT=web,worker,node \
+		-s ALLOW_MEMORY_GROWTH=1 \
+		-s MAXIMUM_MEMORY=4294967296 \
+		-s EXPORTED_FUNCTIONS='$(NCI_EXPORTED_FUNCTIONS)' \
+		-s EXPORTED_RUNTIME_METHODS='$(NCI_EXPORTED_RUNTIME)' \
+		-o $(NCI_JS_OUT)
+
 # -Os and --closure 1, unlike the -O3 above: this module is loaded on every
 # page view (model/MarchingCubesWrapper.js imports it at module scope), so its
 # glue size is worth more than the last few percent of speed.
@@ -107,5 +139,5 @@ $(MC_JS_OUT): $(MC_SRC)
 	$(call stamp_nocheck,$(MC_JS_OUT))
 
 clean:
-	rm -f $(JS_OUT) $(WASM_OUT) $(WAVE_JS_OUT) $(WAVE_WASM_OUT) $(MC_JS_OUT) $(MC_WASM_OUT)
+	rm -f $(JS_OUT) $(WASM_OUT) $(WAVE_JS_OUT) $(WAVE_WASM_OUT) $(NCI_JS_OUT) $(NCI_WASM_OUT) $(MC_JS_OUT) $(MC_WASM_OUT)
 	rm -f $(JS_OUT).stamped $(MC_JS_OUT).stamped

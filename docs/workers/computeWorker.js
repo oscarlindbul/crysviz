@@ -89,6 +89,15 @@ const handlers = {
     return { result, transfer: [result.values.buffer] };
   },
 
+  // NCI analysis (reduced density gradient s and sign(lambda2)*rho) of a
+  // density grid or of promolecular atomic densities. Lazily imported like
+  // the wave module; see workers/nciTasks.js.
+  nci: async (payload) => {
+    const { computeNci } = await import('../math/nci-backend-wasm.js');
+    const result = await computeNci(payload);
+    return { result, transfer: [result.s.buffer, result.sl2rho.buffer] };
+  },
+
   // Stream-parse a VASP OUTCAR trajectory. The payload's Blob arrived by
   // reference (structured-cloning a Blob copies a handle, not the bytes), so
   // this worker reads the file in chunks off the main thread and only the
