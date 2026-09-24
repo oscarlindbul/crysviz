@@ -23,11 +23,14 @@ import createNciModule from '../compiled/nci_backend.js';
  *  files with, so a cube's own bohr grid round-trips exactly. */
 export const ANGSTROM_PER_BOHR = 0.529177249;
 
-/** Jmol's NCI defaults (NciCalculation.java). */
+/** NCI defaults. Jmol's (NciCalculation.java), except the promolecular
+ *  density cut: Jmol uses 0.07, but at 0.07 the promolecular density leaves
+ *  wide low-s sheets around covalent bonds, so 0.05 as for SCF (the value
+ *  Rzepa's cub2nci page passes for both variants). */
 export const NCI_DEFAULTS = Object.freeze({
   rhoMin: 1e-5,
   rhoPlotScf: 0.05,
-  rhoPlotPromolecular: 0.07,
+  rhoPlotPromolecular: 0.05,
   sCap: 2.0,
 });
 

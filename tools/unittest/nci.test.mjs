@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 
 import {
   ANGSTROM_PER_BOHR,
+  NCI_DEFAULTS,
   computeNci,
   getNciBackend,
   promolecularDensityWithModule,
@@ -403,7 +404,7 @@ test('promolecular: single H atom matches the analytic density and s', async () 
         const idx = i + n[0] * (j + n[1] * k);
         const ref = promolecular(atoms, gridPoint(v, i, j, k));
         assert.ok(Math.abs(rho[idx] - ref.rho) <= 1e-6 * ref.rho + 1e-12, `rho at ${i},${j},${k}`);
-        if (ref.rho < 1e-5 || ref.rho > 0.07) {
+        if (ref.rho < 1e-5 || ref.rho > NCI_DEFAULTS.rhoPlotPromolecular) {
           assert.equal(result.s[idx], S_CAP);
           assert.equal(result.sl2rho[idx], 0);
           continue;

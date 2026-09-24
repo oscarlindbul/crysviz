@@ -41,7 +41,8 @@ be changed like any other field's.
 ## Density window
 
 Only points with ρ_min < ρ < ρ_plot are kept, with ρ_min = 1e-5 a.u. and ρ_plot = 0.05 a.u.
-(SCF) or 0.07 a.u. (promolecular). s is also small near nuclei and inside covalent bonds, where the
+for both buttons (Jmol uses 0.07 for promolecular densities, which leaves wide sheets around the
+bonds). s is also small near nuclei and inside covalent bonds, where the
 density is high; the upper cut removes those, and the lower cut removes the vacuum, where s is
 dominated by numerical noise. Points outside the window get s = 2 (no surface) and
 sign(λ₂)ρ = 0. The status line reports how many grid points fell inside it.
