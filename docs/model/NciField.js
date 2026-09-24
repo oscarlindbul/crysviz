@@ -18,7 +18,14 @@ import { invert3x3, transpose3x3, fracToCartPoint, cartToFractional } from '../m
  *
  * The s field carries `colorBy` pointing at the sign(λ₂)ρ field, so selecting
  * it draws the NCI plot straight away; nothing else in the app has to know
- * that the two belong together.
+ * that the two belong together. *
+ * Credits: the NCI method is by E. R. Johnson, S. Keinan, P. Mori-Sánchez,
+ * J. Contreras-García, A. J. Cohen and W. Yang (J. Am. Chem. Soc. 132, 6498
+ * (2010)) and NCIPLOT by J. Contreras-García, E. R. Johnson, S. Keinan,
+ * R. Chaudret, J.-P. Piquemal, D. N. Beratan and W. Yang (J. Chem. Theory
+ * Comput. 7, 625 (2011)), whose promolecular densities are used; the numerics
+ * are ported from Jmol's NciCalculation by Bob Hanson. Full references in
+ * docs/compiled/nci_backend.c.
  */
 
 /** Bohr in Å (CODATA 2018). e/Å³ × BOHR³ = e/bohr³. */

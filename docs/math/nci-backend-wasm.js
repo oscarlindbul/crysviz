@@ -16,7 +16,14 @@ import createNciModule from '../compiled/nci_backend.js';
  * gradient s (dimensionless) and sign(lambda2)*rho in e/bohr^3.
  *
  * Memory: every call allocates and frees its own heap buffers (see
- * withMemory), so nothing large outlives a call.
+ * withMemory), so nothing large outlives a call. *
+ * Credits: the NCI method is by E. R. Johnson, S. Keinan, P. Mori-Sánchez,
+ * J. Contreras-García, A. J. Cohen and W. Yang (J. Am. Chem. Soc. 132, 6498
+ * (2010)) and NCIPLOT by J. Contreras-García, E. R. Johnson, S. Keinan,
+ * R. Chaudret, J.-P. Piquemal, D. N. Beratan and W. Yang (J. Chem. Theory
+ * Comput. 7, 625 (2011)), whose promolecular densities are used; the numerics
+ * are ported from Jmol's NciCalculation by Bob Hanson. Full references in
+ * docs/compiled/nci_backend.c.
  */
 
 /** Angstrom per bohr. The same constant `io/ReadCubeModule.js` converts cube

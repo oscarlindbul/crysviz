@@ -9,6 +9,28 @@
 #endif
 
 /*
+ * Credits
+ * -------
+ * The NCI method is due to its original developers:
+ *
+ *   E. R. Johnson, S. Keinan, P. Mori-Sanchez, J. Contreras-Garcia,
+ *   A. J. Cohen and W. Yang, "Revealing Noncovalent Interactions",
+ *   J. Am. Chem. Soc. 132, 6498-6506 (2010), doi:10.1021/ja100936w.
+ *
+ *   J. Contreras-Garcia, E. R. Johnson, S. Keinan, R. Chaudret,
+ *   J.-P. Piquemal, D. N. Beratan and W. Yang, "NCIPLOT: A Program for
+ *   Plotting Noncovalent Interaction Regions", J. Chem. Theory Comput. 7,
+ *   625-632 (2011), doi:10.1021/ct100641a.
+ *
+ * The promolecular atomic-density parameters (coef/zeta tables below) are
+ * NCIPLOT's. This file is a port of Jmol's NCI implementation,
+ * org.jmol.quantum.NciCalculation by Bob Hanson (Jmol, https://jmol.sourceforge.net,
+ * LGPL-2.1-or-later), including its discrete "SCF" finite-difference mode.
+ * Henry Rzepa's cub2nci page (https://www.ch.ic.ac.uk/rzepa/cub2nci/) was the
+ * reference for how Jmol is used on Gaussian cubes.
+ */
+
+/*
  * NCI (non-covalent interaction) analysis for WASM.
  *
  * A port of Jmol's `org.jmol.quantum.NciCalculation` (reference copy in

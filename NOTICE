@@ -86,7 +86,17 @@ Third-Party Libraries and Attribution:
    - GLSL chunk library adapted for the optional "Path tracing" rendering
      pipeline; see docs/external/three-pathtracing/README.md for the adaptations.
 
-9. Noto Sans, Noto Sans Math, Noto Sans Symbols, Noto Sans Symbols 2, and Noto Emoji
+9. Jmol NCI implementation and the NCI method
+   - Jmol: https://jmol.sourceforge.net (source: https://github.com/BobHanson/Jmol-SwingJS)
+   - License: LGPL-2.1-or-later
+   - Copyright: Jmol developers; org.jmol.quantum.NciCalculation by Bob Hanson
+   - Ported (not verbatim) to C/WASM in docs/compiled/nci_backend.c for the
+     "Create SCF-NCI field" / "Create Promolecular NCI field" buttons.
+   - The NCI method: E. R. Johnson et al., J. Am. Chem. Soc. 132, 6498 (2010);
+     NCIPLOT and its promolecular density parameters: J. Contreras-García et al.,
+     J. Chem. Theory Comput. 7, 625 (2011).
+
+10. Noto Sans, Noto Sans Math, Noto Sans Symbols, Noto Sans Symbols 2, and Noto Emoji
    - License: SIL Open Font License 1.1
    - See docs/fonts/OFL.txt, docs/fonts/OFL-math.txt, docs/fonts/OFL-symbols.txt,
      docs/fonts/OFL-symbols2.txt, and docs/fonts/OFL-emoji.txt for the license texts.
