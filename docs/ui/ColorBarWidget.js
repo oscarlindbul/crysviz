@@ -5,7 +5,7 @@
 
 import * as THREE from '../external/three/three.module.js';
 import { general } from '../state/store.js';
-import { getHeatMapColors, getBatlowColors, getHawaiiColors, getManaguaColors, getViridisColors, getPlasmaColors, getSpectralRColors, getJetColors } from '../defaults/color_texture_defaults.js';
+import { getHeatMapColors, getBatlowColors, getHawaiiColors, getManaguaColors, getViridisColors, getPlasmaColors, getSpectralRColors, getJetColors, getBgyorColors } from '../defaults/color_texture_defaults.js';
 import { makeColorBarDraggable } from './ColorBarDrag.js';
 import { listActiveColorBars } from './ColorBarRegistry.js';
 import { applyLegendHtml, legendPlainText, wireLongPress } from '../utils/index.js';
@@ -17,6 +17,15 @@ function createElement(tag, attributes = {}, styles = {}, textContent = "") {
   if (textContent) el.textContent = textContent;
   return el;
 }
+
+// Every colormap colorsFor() below resolves, as [value, label] pairs in menu
+// order, for dropdowns that do not need the panel-specific extras
+// (direction/plus-minus/element maps) — e.g. ui/FieldColorByControl.js.
+export const COLORMAP_CHOICES = Object.freeze([
+  ['heatmap', 'Heat Map'], ['batlow', 'Batlow'], ['hawaii', 'Hawaii'],
+  ['managua', 'Managua'], ['viridis', 'Viridis'], ['plasma', 'Plasma'],
+  ['spectralR', 'Spectral R'], ['jet', 'Jet'], ['bgyor', 'BGYOR (NCI)'],
+]);
 
 // Exported for render/ImageExportModule.js, which redraws a bar's gradient
 // on the export's 2D canvas rather than rasterizing the live DOM widget —
@@ -31,6 +40,7 @@ export function colorsFor(colormap) {
     case "plasma": return getPlasmaColors();
     case "spectralR": return getSpectralRColors();
     case "jet": return getJetColors();
+    case "bgyor": return getBgyorColors();
     default: return getHeatMapColors();
   }
 }

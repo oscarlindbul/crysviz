@@ -842,6 +842,7 @@ export function addPlanesPanel(target = "cvPanelBody-planes") {
               <option value="plasma">Plasma</option>
               <option value="spectralR">Spectral R</option>
               <option value="jet">Jet</option>
+              <option value="bgyor">BGYOR (NCI)</option>
             </select>
           </div>
           </div>

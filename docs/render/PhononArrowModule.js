@@ -71,7 +71,7 @@ const ARROW_LEN_MAX = 2.0;
 const TIP_LENGTH = 0.8;
 const TIP_RADIUS = 0.3;
 const LOG_EPS = 1e-6;
-const SCALAR_MAPS = new Set(['batlow', 'hawaii', 'managua', 'viridis', 'plasma', 'spectralR', 'heatmap', 'jet']);
+const SCALAR_MAPS = new Set(['batlow', 'hawaii', 'managua', 'viridis', 'plasma', 'spectralR', 'heatmap', 'jet', 'bgyor']);
 
 /** Is this colour-map name a scalar (magnitude) map that needs a range/bar? */
 export function isScalarArrowMap(name) {

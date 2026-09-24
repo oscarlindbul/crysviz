@@ -21,7 +21,7 @@ import { bondKey } from '../../BondsFracUpdateModule.js';
 import { normalizePeriodicBounds } from '../../LatticeModule.js';
 import { getAtomImageStyle } from '../../AtomsFracUpdateModule.js';
 import { MAX_CUT_PLANES } from '../../MaterialStyles.js';
-import { getCutPlaneMaskSign, Plane } from '../../../model/index.js';
+import { getCutPlaneMaskSign, Plane, getIsosurfaceMaterialSettings } from '../../../model/index.js';
 import { wedgeDataForAtom, MAX_WEDGES } from '../../WedgeAtoms.js';
 import { DATA_TEX_WIDTH } from './sceneFragment.js';
 
@@ -1442,8 +1442,20 @@ export class SceneEncoder {
 
     this.fieldIso = Number.isFinite(field.isoValue) ? field.isoValue : 0;
     this.fieldAbsMode = !!field.useAbsoluteIsoValue;
-    if (iso.meshes?.positive?.material?.color) this.fieldPosColor.copy(iso.meshes.positive.material.color);
-    if (iso.meshes?.negative?.material?.color) this.fieldNegColor.copy(iso.meshes.negative.material.color);
+    // A colour-by surface (model/Isosurface.js) has a white material and its
+    // colours in a vertex attribute the tracer does not sample; trace it in
+    // its lobe colours instead of white.
+    const lobeColors = getIsosurfaceMaterialSettings();
+    const posMesh = iso.meshes?.positive;
+    const negMesh = iso.meshes?.negative;
+    if (posMesh?.material?.color) {
+      if (posMesh.geometry?.userData?.colorByRGB) this.fieldPosColor.set(lobeColors.positiveColor);
+      else this.fieldPosColor.copy(posMesh.material.color);
+    }
+    if (negMesh?.material?.color) {
+      if (negMesh.geometry?.userData?.colorByRGB) this.fieldNegColor.set(lobeColors.negativeColor);
+      else this.fieldNegColor.copy(negMesh.material.color);
+    }
     this.fieldAlpha = iso.meshes?.positive?.material?.opacity ?? 0.6;
 
     // Tracer material for the field surface (default = opaque coat). Glass is

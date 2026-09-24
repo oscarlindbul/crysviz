@@ -2,7 +2,7 @@ import * as THREE from '../external/three/three.module.js';
 
 import {bondLengths, coordinationNumbers, app, groups,fileBrowser, general, highlightHover} from '../state/store.js';
 import {getDefaultBondCutoff} from '../defaults/radii_defaults.js'
-import {getBondVisSettings,getHeatMapColors,getBatlowColors,getHawaiiColors,getManaguaColors,getViridisColors,getPlasmaColors,getSpectralRColors,getJetColors} from '../defaults/color_texture_defaults.js'
+import {getBondVisSettings,getHeatMapColors,getBatlowColors,getHawaiiColors,getManaguaColors,getViridisColors,getPlasmaColors,getSpectralRColors,getJetColors,getBgyorColors} from '../defaults/color_texture_defaults.js'
 import {Bond} from '../model/index.js';
 import { getCutPlaneMaskSign } from '../model/Plane.js';
 import {createStyledMaterial, addCelOutline, syncCelHullOpacitySuppression} from './MaterialStyles.js'
@@ -444,6 +444,7 @@ export function buildBondObjects(structure){
       case "plasma": colors = getPlasmaColors(); break;
       case "spectralR": colors = getSpectralRColors(); break;
       case "jet": colors = getJetColors(); break;
+      case "bgyor": colors = getBgyorColors(); break;
       default: colors = getHeatMapColors();
     }
 

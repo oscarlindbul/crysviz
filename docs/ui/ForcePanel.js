@@ -222,6 +222,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     ["plasma", "Plasma"],
     ["spectralR", "Spectral R"],
     ["jet", "Jet"],
+    ["bgyor", "BGYOR (NCI)"],
   ];
   options.forEach(([value, label]) => {
     const opt = document.createElement("option");

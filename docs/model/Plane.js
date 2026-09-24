@@ -3,7 +3,7 @@ import { Field } from './Field.js';
 import { applyTransparency } from '../utils/TransparencyPolicy.js';
 import {
   getHeatMapColors, getBatlowColors, getHawaiiColors, getManaguaColors,
-  getViridisColors, getPlasmaColors, getSpectralRColors, getJetColors,
+  getViridisColors, getPlasmaColors, getSpectralRColors, getJetColors, getBgyorColors,
 } from '../defaults/color_texture_defaults.js';
 
 // ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ const COLORMAP_LOG_EPS = 1e-6;
 // (external/three/Lut.js), so a "Viridis" or "Plasma" here was a
 // same-named but independently-defined lookalike, not actually the same
 // colors as everywhere else in the app.
-function colorArrayFor(colormap) {
+export function colorArrayFor(colormap) {
   switch (colormap) {
     case "batlow": return getBatlowColors();
     case "hawaii": return getHawaiiColors();
@@ -76,6 +76,7 @@ function colorArrayFor(colormap) {
     case "plasma": return getPlasmaColors();
     case "spectralR": return getSpectralRColors();
     case "jet": return getJetColors();
+    case "bgyor": return getBgyorColors();
     default: return getHeatMapColors();
   }
 }
@@ -84,7 +85,7 @@ function colorArrayFor(colormap) {
 // setMin/setMax/getColor(value) call shape updateColorMap() below already
 // uses — but sourced from colorArrayFor() above instead of Lut.js's own
 // palette set, and with log-scale support Lut.js has no concept of at all.
-class ColormapLut {
+export class ColormapLut {
   constructor(colormap = 'heatmap') {
     this.colors = colorArrayFor(colormap);
     this.minV = 0;

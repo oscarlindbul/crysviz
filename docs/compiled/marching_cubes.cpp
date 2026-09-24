@@ -462,6 +462,16 @@ public:
 	float* vnormal_list;
 	float* vnormal_cache;
 
+	// Optional secondary ("colour") field, e.g. sign(lambda2)*rho for an NCI
+	// surface of s. Same grid as `field`; interpolated along each crossed edge
+	// with the SAME `mu` as the vertex position (Jmol's process(vA, vB, f)), so
+	// every output vertex carries the colour field's value at that point.
+	// Both buffers exist only while enabled, so the default (single-field) path
+	// pays no memory, and update_vertices dispatches to a template instance
+	// without the extra work.
+	float* color_field = nullptr;
+	float* vvalue_list = nullptr;
+
 	MarchingCubes(unsigned int resx, unsigned int resy, unsigned int resz, uintptr_t field_data, uintptr_t cache_data)
 			: MarchingCubes(resx, resy, resz) {
 		this->field = reinterpret_cast<float*>(field_data); // use provided field data (assumed to be pre-allocated and filled, and not owned by this class, so no free in destructor)
@@ -493,6 +503,37 @@ public:
 		}
 		delete[] vertex_list;
 		delete[] vnormal_list;
+		// The colour buffers are always owned, whichever constructor ran.
+		delete[] color_field;
+		delete[] vvalue_list;
+	}
+
+	/*
+	 * Allocate (true) or free (false) the colour field and the per-vertex value
+	 * list. Idempotent. After enabling, JS fills getColorField() (field_size
+	 * floats, same layout as getField()) and every updateVertices() also writes
+	 * one interpolated value per vertex to getVertexValues().
+	 */
+	void set_color_field_enabled(bool enabled) {
+		if (enabled == (color_field != nullptr)) return;
+		if (enabled) {
+			color_field = new float[field_size]();
+			vvalue_list = new float[field_size * 5](); // same vertex bound as vertex_list
+		} else {
+			delete[] color_field;
+			delete[] vvalue_list;
+			color_field = nullptr;
+			vvalue_list = nullptr;
+		}
+	}
+	bool get_color_field_enabled() {
+		return color_field != nullptr;
+	}
+	uintptr_t get_color_field() {
+		return reinterpret_cast<uintptr_t>(color_field);
+	}
+	uintptr_t get_vertex_values() {
+		return reinterpret_cast<uintptr_t>(vvalue_list);
 	}
 
 	uintptr_t get_field() {
@@ -630,12 +671,13 @@ public:
 		}
 	}
 
+	template <bool WithColor>
 	inline void _add_edge_vertex(float isoval,
 			unsigned char edge_ind,
 			size_t v1_ind, size_t v2_ind,
 			float x1, float y1, float z1,
 			float field1, float field2,
-			float* pos_out, float* normal_out) {
+			float* pos_out, float* normal_out, float* value_out) {
 
 		float mu = 0;
 		if (abs(field1 - field2) > 1e-16) { // avoid division by zero
@@ -662,11 +704,28 @@ public:
 		for (int i = 0; i < 3; i++) {
 			normal_out[i] = linear_interp(vnormal_cache[3*v1_ind + i], vnormal_cache[3*v2_ind + i], mu);
 		}
+
+		// colour value: the colour field is read straight from the grid (no
+		// per-point cache needed, unlike the normals), interpolated like the
+		// position
+		if (WithColor) {
+			*value_out = linear_interp(color_field[v1_ind], color_field[v2_ind], mu);
+		}
 	}
 
 	void update_vertices(float isovalue) {
+		if (color_field != nullptr) {
+			_update_vertices<true>(isovalue);
+		} else {
+			_update_vertices<false>(isovalue);
+		}
+	}
+
+	template <bool WithColor>
+	void _update_vertices(float isovalue) {
 		float vertices_on_edge[12*3]; // flattened vertex positions for the 12 edges, each with x,y,z components
 		float vnormals_on_edge[12*3]; // flattened vertex normals for the 12 edges, each with x,y,z components
+		float values_on_edge[12]; // colour-field value per edge (WithColor only)
 		int z_ind, y_ind, x_ind;
 		size_t vertex_index = (size_t)(-1);
 		this->vertex_count = 0;
@@ -726,13 +785,14 @@ public:
 							};
 							const float field1 = field[v1_ind];
 							const float field2 = field[v2_ind];
-							_add_edge_vertex(isovalue,
+							_add_edge_vertex<WithColor>(isovalue,
 								i, // edge index
 								v1_ind, v2_ind, // vertex indices for the edge endpoints
 								pos1[0], pos1[1], pos1[2], // starting position (assuming v1 and v2 are at the endpoints of same edge)
 								field1, field2, // field values for interpolation
 								&vertices_on_edge[i*3], // position output
-								&vnormals_on_edge[i*3] // normal vector output
+								&vnormals_on_edge[i*3], // normal vector output
+								&values_on_edge[i] // colour value output (WithColor only)
 							); 
 						}
 					}
@@ -746,6 +806,9 @@ public:
 						this->vnormal_list[3*vertex_count] 		= vnormals_on_edge[edge*3];
 						this->vnormal_list[3*vertex_count + 1] 	= vnormals_on_edge[edge*3 + 1];
 						this->vnormal_list[3*vertex_count + 2] 	= vnormals_on_edge[edge*3 + 2];
+						if (WithColor) {
+							this->vvalue_list[vertex_count] = values_on_edge[edge];
+						}
 						this->vertex_count++;
 					}
 				}
@@ -769,5 +832,9 @@ EMSCRIPTEN_BINDINGS(marching_cubes_module) {
 		.function("getVNormalCache", &MarchingCubes::get_vnormal_cache)
 		.function("getVertexCount", &MarchingCubes::get_vertex_count)
 		.function("defaultIsoValue", &MarchingCubes::default_isovalue)
+		.function("setColorFieldEnabled", &MarchingCubes::set_color_field_enabled)
+		.function("getColorFieldEnabled", &MarchingCubes::get_color_field_enabled)
+		.function("getColorField", &MarchingCubes::get_color_field)
+		.function("getVertexValues", &MarchingCubes::get_vertex_values)
 		.function("updateVertices", &MarchingCubes::update_vertices);
 }

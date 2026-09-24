@@ -5,7 +5,7 @@ import { groups } from '../state/store.js';
 
 import { MarchingCubesWrapper, MarchingCubesBackend } from './MarchingCubesWrapper.js';
 import { applyTransparency } from '../utils/TransparencyPolicy.js';
-import { makeFractionalBoundsClippingPlanes } from './Plane.js';
+import { makeFractionalBoundsClippingPlanes, ColormapLut } from './Plane.js';
 
 
 // Transparency flags (transparent, depthWrite, renderOrder) are owned by the
@@ -20,6 +20,7 @@ export let surface_options = {
 
 
 export let defaultPosColor = new THREE.Color(0x33aaff);
+const _white = new THREE.Color(0xffffff);
 export let defaultNegColor = new THREE.Color(0xff3333);
 export let isosurfaceTriangleSortingEnabled = true;
 
@@ -70,6 +71,134 @@ export function getIsosurfaceTriangleSortingEnabled() {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+//  Colour-by: an isosurface of field A coloured per vertex by field B
+//
+//  Field.colorBy = { field: Field, colormap: string, min: number, max: number }
+//  (or null). The marching-cubes backend interpolates B onto every vertex
+//  with the same edge parameter as the vertex position
+//  (model/MarchingCubesWrapper.js setColorField), the raw values are kept on
+//  the geometry (userData.colorByValues) so a colormap/range edit only
+//  remaps, and the mapped RGB (userData.colorByRGB) goes into the RGBA vertex
+//  `color` attribute that render/FocusRegionModule.js shares for its alpha
+//  (userData.focusAlpha). composeIsosurfaceVertexColors() is the single
+//  writer of that attribute, so whichever of the two runs first, the result
+//  is the same.
+// ---------------------------------------------------------------------------
+
+/**
+ * The field's colour-by setting if it can be honoured: a colour field with
+ * values on the same grid and a finite range. Anything else reads as none.
+ *
+ * @param {any} field a Field (colorBy may not be declared on older builds)
+ * @returns {{field: any, colormap: string, min: number, max: number} | null}
+ */
+export function resolveColorBy(field) {
+    const colorBy = field?.colorBy;
+    const source = colorBy?.field;
+    if (!source?.values || !field) return null;
+    if (source.nx !== field.nx || source.ny !== field.ny || source.nz !== field.nz) return null;
+    const min = Number(colorBy.min);
+    const max = Number(colorBy.max);
+    if (!Number.isFinite(min) || !Number.isFinite(max)) return null;
+    return { field: source, colormap: colorBy.colormap || 'bgyor', min, max };
+}
+
+/**
+ * Whether `candidate` can colour `field`'s isosurface: loaded and on the same
+ * grid. (A field may colour itself — that is just a gradient along the
+ * isovalue, harmless and occasionally a useful check.)
+ */
+export function canColorFieldBy(field, candidate) {
+    return Boolean(field && candidate?.values)
+        && candidate.nx === field.nx && candidate.ny === field.ny && candidate.nz === field.nz;
+}
+
+/**
+ * Map per-vertex values through a colormap into linear RGB triplets.
+ * @param {ArrayLike<number>} values
+ * @param {{colormap: string, min: number, max: number}} colorBy
+ * @returns {Float32Array}
+ */
+export function mapValuesToColors(values, colorBy) {
+    const lut = new ColormapLut(colorBy.colormap).setMin(colorBy.min).setMax(colorBy.max);
+    const out = new Float32Array(values.length * 3);
+    for (let i = 0; i < values.length; i++) {
+        const v = values[i];
+        // NaN (never produced by marching cubes, but a colour field may hold
+        // them) maps to the low end rather than poisoning the attribute.
+        const c = lut.getColor(Number.isFinite(v) ? v : colorBy.min);
+        out[i * 3] = c.r;
+        out[i * 3 + 1] = c.g;
+        out[i * 3 + 2] = c.b;
+    }
+    return out;
+}
+
+/**
+ * Write (or remove) an isosurface mesh's RGBA vertex `color` attribute from
+ * its two independent inputs on the geometry:
+ *   userData.colorByRGB  Float32Array(count*3) | null — colour-by RGB (else 1)
+ *   userData.focusAlpha  Float32Array(count)   | null — focus fade (else 1)
+ * With neither, the attribute is removed and vertex colours switched off.
+ * Transparency is NOT touched here: the focus code owns the
+ * needsTransparency decision (its alpha), colour-by is opaque RGB.
+ *
+ * @param {any} mesh
+ */
+export function composeIsosurfaceVertexColors(mesh) {
+    const geometry = mesh?.geometry;
+    const material = mesh?.material;
+    if (!geometry || !material) return;
+    const position = geometry.getAttribute('position');
+    const count = position?.count ?? 0;
+    const rgb = geometry.userData?.colorByRGB;
+    const alpha = geometry.userData?.focusAlpha;
+    const hasRgb = Boolean(rgb) && rgb.length === count * 3 && count > 0;
+    const hasAlpha = Boolean(alpha) && alpha.length === count && count > 0;
+    if (!hasRgb && !hasAlpha) {
+        if (geometry.getAttribute('color')) geometry.deleteAttribute('color');
+        if (material.vertexColors) {
+            material.vertexColors = false;
+            material.needsUpdate = true;
+        }
+        return;
+    }
+    let color = geometry.getAttribute('color');
+    if (!color || color.itemSize !== 4 || color.count !== count) {
+        color = new THREE.BufferAttribute(new Float32Array(count * 4), 4);
+        geometry.setAttribute('color', color);
+    }
+    const dst = /** @type {Float32Array} */ (color.array);
+    for (let i = 0; i < count; i++) {
+        dst[i * 4] = hasRgb ? rgb[i * 3] : 1;
+        dst[i * 4 + 1] = hasRgb ? rgb[i * 3 + 1] : 1;
+        dst[i * 4 + 2] = hasRgb ? rgb[i * 3 + 2] : 1;
+        dst[i * 4 + 3] = hasAlpha ? alpha[i] : 1;
+    }
+    color.needsUpdate = true;
+    if (!material.vertexColors) {
+        material.vertexColors = true;
+        material.needsUpdate = true;
+    }
+}
+
+/**
+ * Re-colour the live isosurface after its field's colorBy changed.
+ *
+ * A colormap or min/max edit only remaps the per-vertex values already on
+ * the geometry. A different colour FIELD needs new values, which only a
+ * marching-cubes pass produces, so then this returns false and the caller
+ * rebuilds (render/index.js updateField). Callers still requestRender().
+ *
+ * @param {any} [isosurface] defaults to groups.isosurfaceGroup
+ * @returns {boolean} true if the colours are now current without a rebuild
+ */
+export function refreshIsosurfaceColors(isosurface = groups.isosurfaceGroup) {
+    if (!isosurface?.applyColorBy) return false;
+    return isosurface.applyColorBy();
+}
+
 export function applyIsosurfaceMaterialSettings(isosurface, settings = {}) {
     if (!isosurface || !isosurface.meshes) return;
 
@@ -79,7 +208,10 @@ export function applyIsosurfaceMaterialSettings(isosurface, settings = {}) {
         const material = mesh?.material;
         if (!material) return;
         if (color !== undefined) {
-            material.color.set(color);
+            // A colour-by surface takes its colour from the vertex attribute;
+            // a tinted material would multiply into it. The lobe colour is
+            // kept in defaultPos/NegColor and restored when colour-by ends.
+            material.color.set(mesh.geometry?.userData?.colorByRGB ? 0xffffff : color);
         }
         if (opacity !== undefined) {
             material.opacity = clampOpacity(opacity);
@@ -236,6 +368,9 @@ export class Isosurface extends THREE.Group{
         this.lastCameraPosition = new THREE.Vector3();
 
         this.marchingCubes = new MarchingCubesWrapper(field, this.backend);
+        /** The colour-by field the backend currently interpolates (null = none).
+         *  @type {any} */
+        this._colorSourceField = null;
 
         /** Extra meshes drawing this field in the other cells the periodic
          *  display boundary reaches. They SHARE the positive/negative meshes'
@@ -282,13 +417,19 @@ export class Isosurface extends THREE.Group{
             const positionAttr = mesh.geometry.getAttribute('position');
             if (!positionAttr?.array || positionAttr.count < 3) continue;
             const normalAttr = mesh.geometry.getAttribute('normal');
+            const colorAttr = mesh.geometry.getAttribute('color');
+            const userData = mesh.geometry.userData ?? {};
 
-            this.marchingCubes.sortVerticesToCamera(localCameraPosition, positionAttr.array, normalAttr?.array);
+            // Every per-vertex array rides the same permutation, or the
+            // colour-by / focus colours would detach from their vertices.
+            this.marchingCubes.sortVerticesToCamera(localCameraPosition, positionAttr.array, normalAttr?.array,
+                colorAttr?.array, userData.colorByValues, userData.colorByRGB, userData.focusAlpha);
 
             positionAttr.needsUpdate = true;
             if (normalAttr) {
                 normalAttr.needsUpdate = true;
             }
+            if (colorAttr) colorAttr.needsUpdate = true;
         }
     }
 
@@ -333,10 +474,14 @@ export class Isosurface extends THREE.Group{
         this.field.isovalue = value;
     }
 
-    _replaceGeometry(meshKey, vertices, normals) {
+    _replaceGeometry(meshKey, vertices, normals, values = null) {
         const tmpGeom = new THREE.BufferGeometry();
         tmpGeom.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
         tmpGeom.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+        // Colour-field values per vertex (colour-by), and which field they
+        // came from, so applyColorBy() can tell a remap from a stale set.
+        tmpGeom.userData.colorByValues = values ?? null;
+        tmpGeom.userData.colorBySource = values ? this._colorSourceField : null;
 
         const merged = tmpGeom; // mergeVertices(tmpGeom); // merging vertices might be a good idea, but currently way more expensive
         if (this.backend === MarchingCubesBackend.THREE) {
@@ -350,14 +495,15 @@ export class Isosurface extends THREE.Group{
         this._syncImageState(); // the copies draw this same geometry
     }
 
-    refreshGeometry(field_key, vertices, normals) {
+    refreshGeometry(field_key, vertices, normals, values = null) {
         if (field_key == "positive") {
             if (vertices === undefined || normals === undefined) {
                 const data = this.marchingCubes.getVertices();
                 vertices = data.vertices;
                 normals = data.normals;
+                values = data.values;
             }
-            this._replaceGeometry('positive', vertices, normals);
+            this._replaceGeometry('positive', vertices, normals, values);
             this.meshes.positive.needsUpdate = true;
             this.add(this.meshes.positive);
         }
@@ -366,8 +512,9 @@ export class Isosurface extends THREE.Group{
                 const data = this.marchingCubes.getVertices();
                 vertices = data.vertices;
                 normals = data.normals;
+                values = data.values;
             }
-            this._replaceGeometry('negative', vertices, normals);
+            this._replaceGeometry('negative', vertices, normals, values);
             this.meshes.negative.needsUpdate = true;
             this.add(this.meshes.negative);
         }
@@ -529,9 +676,57 @@ export class Isosurface extends THREE.Group{
         }
     }
 
+    /**
+     * Point the marching-cubes backend at the field's current colour-by
+     * field (or none), so the next pass interpolates it onto the vertices.
+     */
+    _syncColorField() {
+        const colorBy = resolveColorBy(this.field);
+        const active = this.marchingCubes.setColorField(colorBy?.field ?? null);
+        this._colorSourceField = active ? colorBy.field : null;
+    }
+
+    /**
+     * Colour both lobes from their stored per-vertex values and the field's
+     * colorBy (colormap + range), or return them to the flat lobe colours
+     * when colour-by is off. Cheap: no marching-cubes pass.
+     *
+     * @returns {boolean} false when colour-by is set but the geometry holds
+     *   no values for that colour field (it changed since the last rebuild,
+     *   or the backend cannot interpolate): the caller must rebuild.
+     */
+    applyColorBy() {
+        const colorBy = resolveColorBy(this.field);
+        let current = true;
+        for (const key of ['positive', 'negative']) {
+            const mesh = this.meshes?.[key];
+            const geometry = mesh?.geometry;
+            const material = mesh?.material;
+            if (!geometry || !material) continue;
+            const count = geometry.getAttribute('position')?.count ?? 0;
+            const values = geometry.userData.colorByValues;
+            let rgb = null;
+            if (colorBy && count > 0) {
+                if (values && values.length === count && geometry.userData.colorBySource === colorBy.field) {
+                    rgb = mapValuesToColors(values, colorBy);
+                } else {
+                    current = false;
+                }
+            }
+            geometry.userData.colorByRGB = rgb;
+            // White under vertex colours so the colormap is not tinted; the
+            // lobe colour otherwise (the live settings, see
+            // setIsosurfaceMaterialSettings).
+            material.color.copy(rgb ? _white : (key === 'positive' ? defaultPosColor : defaultNegColor));
+            composeIsosurfaceVertexColors(mesh);
+        }
+        return current;
+    }
+
     updateMesh(isoValue = this.field.isovalue, useAbsoluteIsoValue = false) {
         if (!groups.activeField) return;
 
+        this._syncColorField();
         let iso = isoValue;
         if (this.marchingCubes && this.meshes.positive && (iso >= 0 || useAbsoluteIsoValue)) {
             if (useAbsoluteIsoValue) {
@@ -541,7 +736,7 @@ export class Isosurface extends THREE.Group{
             this.marchingCubes.updateMesh(iso);
             const posData = this.marchingCubes.getVertices();
             //this.marchingCubes.sortVerticesToCamera(this.lastCameraPosition, posData.vertices, posData.normals);
-            this.refreshGeometry("positive", posData.vertices, posData.normals);
+            this.refreshGeometry("positive", posData.vertices, posData.normals, posData.values);
         }
         if (this.marchingCubes && this.meshes.negative && (iso < 0 || useAbsoluteIsoValue)) {
             if (useAbsoluteIsoValue) {
@@ -551,8 +746,12 @@ export class Isosurface extends THREE.Group{
             this.marchingCubes.updateMesh(iso);
             const negData = this.marchingCubes.getVertices();
             //this.marchingCubes.sortVerticesToCamera(this.lastCameraPosition, negData.vertices, negData.normals);
-            this.refreshGeometry("negative", negData.vertices, negData.normals);
+            this.refreshGeometry("negative", negData.vertices, negData.normals, negData.values);
         }
+        // Fresh geometry has no colour attribute yet: colour it (or confirm
+        // the flat lobe colours) now. The focus alpha, if any, is layered on
+        // by render/FocusRegionModule.js applyFocusToField afterwards.
+        this.applyColorBy();
     }
 
     clearMesh() {

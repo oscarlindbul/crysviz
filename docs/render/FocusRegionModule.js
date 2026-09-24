@@ -2,11 +2,11 @@
 // not mutate Atom.opacity: closing the panel or disabling every region must
 // restore the authored appearance exactly.
 
-import * as THREE from '../external/three/three.module.js';
 import { fileBrowser, groups, general } from '../state/store.js';
 import { readStructurePrefs, scheduleStructurePrefSave } from '../state/structurePrefs.js';
 import { cartToFrac, fracToCart, invert3x3, transpose3x3 } from '../math/index.js';
 import { applyTransparency } from '../utils/TransparencyPolicy.js';
+import { composeIsosurfaceVertexColors } from '../model/Isosurface.js';
 import { requestRender } from './AnimateModule.js';
 import { syncArrowTransparency } from './ArrowMaterial.js';
 import { applyFocusToPolyhedra } from './PolyhedraModule.js';
@@ -392,10 +392,14 @@ export function applyFocusRegions(structure = fileBrowser.selectedStructure) {
 const _fieldPoint = [0, 0, 0];
 
 /** The volumetric field follows the region rule per vertex. The material keeps
- * the Field panel's opacity as the maximum; the focus factor is written to a
+ * the Field panel's opacity as the maximum; the focus factor is the ALPHA of a
  * four-component vertex `color` attribute (three.js USE_COLOR_ALPHA), so the
- * isosurface fades exactly where the atoms around it do. Without active
- * regions the attribute is removed and the material is restored. */
+ * isosurface fades exactly where the atoms around it do. That attribute is
+ * shared with the isosurface's colour-by RGB (model/Isosurface.js), so this
+ * only stores the alpha on the geometry (userData.focusAlpha) and lets
+ * composeIsosurfaceVertexColors() write both: RGB from colour-by or 1, alpha
+ * from here or 1, whichever runs first. Without active regions the alpha is
+ * dropped, and the attribute goes too unless colour-by still needs it. */
 export function applyFocusToField(structure = fileBrowser.selectedStructure) {
   const iso = groups.isosurfaceGroup;
   const meshes = iso?.meshes;
@@ -412,22 +416,18 @@ export function applyFocusToField(structure = fileBrowser.selectedStructure) {
     if (!geometry || !material) continue;
     const position = geometry.getAttribute('position');
     if (!regions.length || !position?.count) {
-      if (geometry.getAttribute('color')) geometry.deleteAttribute('color');
-      if (material.vertexColors) {
-        material.vertexColors = false;
-        material.needsUpdate = true;
-      }
+      geometry.userData.focusAlpha = null;
+      composeIsosurfaceVertexColors(mesh);
       applyTransparency(material, { kind: 'isosurface', opacity: material.opacity, mesh });
       continue;
     }
-    let color = geometry.getAttribute('color');
-    if (!color || color.itemSize !== 4 || color.count !== position.count) {
-      color = new THREE.BufferAttribute(new Float32Array(position.count * 4), 4);
-      geometry.setAttribute('color', color);
+    let alphas = geometry.userData.focusAlpha;
+    if (!(alphas instanceof Float32Array) || alphas.length !== position.count) {
+      alphas = new Float32Array(position.count);
+      geometry.userData.focusAlpha = alphas;
     }
     const m = mesh.matrixWorld.elements;
     const src = position.array;
-    const dst = /** @type {Float32Array} */ (color.array);
     let minAlpha = 1;
     for (let i = 0; i < position.count; i++) {
       const x = src[i * 3];
@@ -438,17 +438,10 @@ export function applyFocusToField(structure = fileBrowser.selectedStructure) {
       _fieldPoint[2] = m[2] * x + m[6] * y + m[10] * z + m[14];
       let alpha = 0;
       for (const region of regions) alpha = Math.max(alpha, focusOpacityAt(_fieldPoint, region, -1, basis));
-      dst[i * 4] = 1;
-      dst[i * 4 + 1] = 1;
-      dst[i * 4 + 2] = 1;
-      dst[i * 4 + 3] = alpha;
+      alphas[i] = alpha;
       if (alpha < minAlpha) minAlpha = alpha;
     }
-    color.needsUpdate = true;
-    if (!material.vertexColors) {
-      material.vertexColors = true;
-      material.needsUpdate = true;
-    }
+    composeIsosurfaceVertexColors(mesh);
     applyTransparency(material, {
       kind: 'isosurface', opacity: material.opacity, needsTransparency: minAlpha < 0.999, mesh,
     });

@@ -769,6 +769,7 @@ function buildArrowSection(host) {
     ['solid', 'Solid Color'], ['direction', 'Direction Map'], ['plusminus', 'Plus-Minus Map'],
     ['heatmap', 'Heatmap'], ['batlow', 'Batlow'], ['hawaii', 'Hawaii'], ['managua', 'Managua'],
     ['viridis', 'Viridis'], ['plasma', 'Plasma'], ['spectralR', 'Spectral R'], ['jet', 'Jet'],
+    ['bgyor', 'BGYOR (NCI)'],
   ]) {
     const opt = el('option', '', label);
     opt.value = value;

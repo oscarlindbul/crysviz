@@ -88,6 +88,61 @@ class MarchingCubesWrapper {
             console.log("Using Three.js built-in Marching Cubes");
         }
         this.marchingCubes = backend_MC;
+        /** Values array last copied into the WASM colour buffer (identity
+         *  check, so an unchanged colour field is not re-copied on every
+         *  isovalue drag). Null while no colour field is set.
+         *  @type {ArrayLike<number> | null} */
+        this._colorValues = null;
+    }
+
+    /**
+     * Set (or clear, with null) the secondary field whose values are
+     * interpolated onto every isosurface vertex — see Field.colorBy and
+     * model/Isosurface.js. The colour field must share this field's grid;
+     * a mismatched one is refused (returns false) and colouring is cleared.
+     *
+     * WASM: the values are copied into the module's colour buffer (allocated
+     * on first use, freed again on clear). THREE/JS backend: not supported,
+     * getVertices() simply reports no values (flat colour).
+     *
+     * @param {{nx:number, ny:number, nz:number, values: ArrayLike<number>} | null} colorField
+     * @param {boolean} [force] re-copy even if the values array is the same object
+     *   (for a field whose values were rewritten in place)
+     * @returns {boolean} whether per-vertex values will be produced
+     */
+    setColorField(colorField, force = false) {
+        const field = this.field;
+        const usable = Boolean(colorField?.values)
+            && colorField.nx === field.nx && colorField.ny === field.ny && colorField.nz === field.nz
+            && colorField.values.length >= field.nx * field.ny * field.nz;
+        if (this.backend !== MarchingCubesBackend.WASM) {
+            this._colorValues = usable ? colorField.values : null;
+            return false;
+        }
+        if (!usable) {
+            if (this._colorValues) this.marchingCubes.setColorFieldEnabled(false);
+            this._colorValues = null;
+            return false;
+        }
+        if (!force && this._colorValues === colorField.values) return true;
+        this.marchingCubes.setColorFieldEnabled(true);
+        const ptr = this.marchingCubes.getColorField();
+        const size = field.nx * field.ny * field.nz;
+        const src = colorField.values.length === size
+            ? colorField.values
+            : /** @type {any} */ (colorField.values).subarray(0, size);
+        MarchingCubesModule.HEAPF32.set(src, ptr >> 2);
+        this._colorValues = colorField.values;
+        return true;
+    }
+
+    /** Per-vertex colour-field values of the last updateMesh(), or null when
+     *  no colour field is set (or the backend cannot produce them). */
+    _readVertexValues(vertexCount) {
+        if (this.backend !== MarchingCubesBackend.WASM || !this._colorValues) return null;
+        const ptr = this.marchingCubes.getVertexValues();
+        if (!ptr) return null;
+        return new Float32Array(MarchingCubesModule.HEAPF32.buffer, ptr, vertexCount).slice();
     }
 
     /**
@@ -130,6 +185,7 @@ class MarchingCubesWrapper {
             return {
                 vertices: vertices, 
                 normals: normals, 
+                values: this._readVertexValues(vertexCount),
                 vertexCount: vertexCount
             };
         }
@@ -140,6 +196,7 @@ class MarchingCubesWrapper {
             return {
                 vertices: verticesArray,
                 normals: normalsArray,
+                values: null,
                 vertexCount: vertexCount
             };
         }
@@ -165,10 +222,9 @@ class MarchingCubesWrapper {
      * sortVerticesToCamera(cameraPosition, primaryArray, ...extraArrays)
      *
      * `primaryArray` must be xyz triplets (stride 3). Each `extraArray` is reordered
-     * with the same permutation. Extra array stride is inferred as:
-     * - 3 when array length is vertexCount * 3
-     * - 2 when array length is vertexCount * 2
-     * - otherwise it is skipped.
+     * with the same permutation. Extra array stride is inferred as
+     * array.length / vertexCount (1..4: values, uv, normals, RGBA colours);
+     * an array whose length is not a whole multiple is skipped.
      */
     sortVerticesToCamera(cameraPosition, primaryArray, ...extraArrays) {
         // if (this.backend === "gpu") {
@@ -192,7 +248,8 @@ class MarchingCubesWrapper {
             for (const array of extraArrays) {
                 if (!array) continue;
 
-                const itemSize = 3;
+                const itemSize = array.length / vertexCount;
+                if (!Number.isInteger(itemSize) || itemSize < 1 || itemSize > 4) continue;
 
                 const extraArrayPtr = MarchingCubesModule.mallocFloatArray(array.length);
                 MarchingCubesModule.HEAPF32.set(array, extraArrayPtr >> 2);
@@ -212,7 +269,7 @@ class MarchingCubesWrapper {
                 if (!array) continue;
 
                 const itemSize = array.length / (permutation.length * 3);
-                if (itemSize === 3 || itemSize === 2) {
+                if (Number.isInteger(itemSize) && itemSize >= 1 && itemSize <= 4) {
                     reorderTriangleArrayByPermutation(array, permutation, itemSize);
                 }
             }
@@ -232,13 +289,14 @@ class MarchingCubesWrapper {
             const normalsPtr  = this.marchingCubes.getNormals();
             const vertices = new Float32Array(MarchingCubesModule.HEAPF32.buffer, verticesPtr, vertexCount * 3).slice();
             const normals  = new Float32Array(MarchingCubesModule.HEAPF32.buffer, normalsPtr,  vertexCount * 3).slice();
-            return { vertices, normals, vertexCount };
+            return { vertices, normals, values: this._readVertexValues(vertexCount), vertexCount };
         }
         else if (backend === MarchingCubesBackend.THREE) {
             const { vertices, normals, vertexCount } = this.marchingCubes.getVertices();
             return {
                 vertices: vertices.slice(0, vertexCount * 3),
                 normals:  normals.slice(0, vertexCount * 3),
+                values: null,
                 vertexCount
             };
         }

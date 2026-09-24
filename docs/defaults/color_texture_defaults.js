@@ -1290,6 +1290,49 @@ export function getJetColors(nBins = 100) {
   return colors;
 }
 
+// Blue-green-yellow-orange-red, the diverging "bgyor" scheme Jmol and
+// NCIPLOT colour NCI surfaces with (sign(lambda2)*rho over [-0.04, 0.04]):
+// blue = attractive (negative), green ~ 0 (van der Waals), red = repulsive
+// (positive).
+export function getBgyorColors(nBins = 100) {
+  // Jmol's JC.argbsRoygbScale reversed (ColorEncoder BGYOR): 35 evenly
+  // spaced colours, blue -> cyan -> green -> yellow -> orange -> red. The
+  // middle entry (0x20FF00) is green, so sign(lambda2)*rho = 0 is green.
+  const hex = [
+    0x0000FF, 0x0020FF, 0x0040FF, 0x0060FF, 0x0080FF, 0x00A0FF, 0x00C0FF, 0x00E0FF,
+    0x00FFFF, 0x00FFE0, 0x00FFC0, 0x00FFA0, 0x00FF80, 0x00FF60, 0x00FF40, 0x00FF20,
+    0x00FF00, 0x20FF00, 0x40FF00, 0x60FF00, 0x80FF00, 0xA0FF00, 0xC0FF00, 0xE0FF00,
+    0xF0F000, 0xFFFF00, 0xFFF000, 0xFFE000, 0xFFC000, 0xFFA000, 0xFF8000, 0xFF6000,
+    0xFF4000, 0xFF2000, 0xFF0000,
+  ];
+  const stops = hex.map((c, i) => ({
+    t: i / (hex.length - 1),
+    r: (c >> 16) & 0xff, g: (c >> 8) & 0xff, b: c & 0xff,
+  }));
+  const colors = [];
+  for (let i = 0; i < nBins; i++) {
+    const t = i / (nBins - 1);
+
+    let stop1 = stops[0], stop2 = stops[1];
+    for (let j = 0; j < stops.length - 1; j++) {
+      if (t >= stops[j].t && t <= stops[j + 1].t) {
+        stop1 = stops[j];
+        stop2 = stops[j + 1];
+        break;
+      }
+    }
+
+    const localT = (t - stop1.t) / (stop2.t - stop1.t);
+    const r = (stop1.r + (stop2.r - stop1.r) * localT) / 255;
+    const g = (stop1.g + (stop2.g - stop1.g) * localT) / 255;
+    const b = (stop1.b + (stop2.b - stop1.b) * localT) / 255;
+
+    colors.push(new THREE.Color().setRGB(r, g, b, THREE.SRGBColorSpace));
+  }
+
+  return colors;
+}
+
 export function getColorFromMap(value, colormap) {
   let colors;
   switch (colormap) {
@@ -1301,6 +1344,7 @@ export function getColorFromMap(value, colormap) {
     case "spectralR": colors = getSpectralRColors(); break;
     case "heatmap": colors = getHeatMapColors(); break;
     case "jet": colors = getJetColors(); break;
+    case "bgyor": colors = getBgyorColors(); break;
     default: return new THREE.Color(0x008080); // Default teal
   }
 

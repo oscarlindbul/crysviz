@@ -1,7 +1,7 @@
 import { createColorPicker } from './ColorPickerModule.js';
 import {updateVisualization} from '../core/crystal-viewer.js';
 import { app, groups,fileBrowser, general, RENDERING_DEFAULTS} from '../state/store.js';
-import {getHeatMapColors,getBatlowColors,getHawaiiColors,getManaguaColors, getViridisColors,getPlasmaColors,getSpectralRColors,getJetColors} from '../defaults/color_texture_defaults.js'
+import {getHeatMapColors,getBatlowColors,getHawaiiColors,getManaguaColors, getViridisColors,getPlasmaColors,getSpectralRColors,getJetColors,getBgyorColors} from '../defaults/color_texture_defaults.js'
 
 import { updateBonds } from '../render/index.js'
 import { updateAtoms } from '../render/index.js'
@@ -178,6 +178,7 @@ function colorMapColors(colorMapName) {
     case "plasma": return getPlasmaColors();
     case "spectralR": return getSpectralRColors();
     case "jet": return getJetColors();
+    case "bgyor": return getBgyorColors();
     default: return getHeatMapColors();
   }
 }
@@ -1037,7 +1038,8 @@ export function addColorPanel(target = "colorContainer") {
     { value: "viridis", text: "Viridis" },
     { value: "plasma", text: "Plasma" },
     { value: "spectralR", text: "Spectral R" },
-    { value: "jet", text: "Jet" }
+    { value: "jet", text: "Jet" },
+    { value: "bgyor", text: "BGYOR (NCI)" }
   ], () => {
     const cmap = atomsColorMapMenu.querySelector("select").value;
     general.atomColorMap = cmap;
@@ -1263,7 +1265,8 @@ export function addColorPanel(target = "colorContainer") {
     { value: "viridis", text: "Viridis" },
     { value: "plasma", text: "Plasma" },
     { value: "spectralR", text: "Spectral R" },
-    { value: "jet", text: "Jet" }
+    { value: "jet", text: "Jet" },
+    { value: "bgyor", text: "BGYOR (NCI)" }
   ], () => {
     const cmap = bondsColorMapMenu.querySelector("select").value;
     general.bondsColorMap = cmap;

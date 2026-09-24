@@ -520,6 +520,10 @@ export function addSpinPanel(target = "cvPanelBody-spins") {
   jetOption.value = "jet";
   jetOption.textContent = "Jet";
 
+  const bgyorOption = document.createElement("option");
+  bgyorOption.value = "bgyor";
+  bgyorOption.textContent = "BGYOR (NCI)";
+
   colorMapSelect.appendChild(noneOption);
   colorMapSelect.appendChild(directionMapOption);
   colorMapSelect.appendChild(plusminusMapOption);
@@ -532,6 +536,7 @@ export function addSpinPanel(target = "cvPanelBody-spins") {
   colorMapSelect.appendChild(plasmaOption);
   colorMapSelect.appendChild(spectralROption);
   colorMapSelect.appendChild(jetOption);
+  colorMapSelect.appendChild(bgyorOption);
   colorMapSelect.value = general.spinColorMap ?? "none";
 
   // --- Log Scale + Auto Range, side by side, above the color bar itself ---
