@@ -3,7 +3,9 @@ export class Field {
    * @param {{nx?:number, ny?:number, nz?:number, origin?:number[], voxel?:any,
    *   values?:any, component?:number, isoValue?:number, absMinValue?:any,
    *   absMaxValue?:any, minValue?:any, maxValue?:any, label?:string,
-   *   useAbsoluteIsoValue?:any, isVisible?:boolean}} [opts]
+   *   useAbsoluteIsoValue?:any, isVisible?:boolean, valueUnit?:string|null,
+   *   periodic?:boolean,
+   *   colorBy?:{field: Field, colormap: string, min: number, max: number}|null}} [opts]
    */
   constructor({
     nx, // number of grid points along x
@@ -20,7 +22,10 @@ export class Field {
     maxValue = null, // maximum field value (can be computed from values)
     label = "", // optional label for the field (e.g., "Charge Density", "Magnetization Density", etc.)
     useAbsoluteIsoValue = null, // whether to use absolute values when determining isovalue
-    isVisible = true // whether this field should be rendered (can be toggled by user)
+    isVisible = true, // whether this field should be rendered (can be toggled by user)
+    valueUnit = null, // unit of the values, e.g. 'e/bohr³' or 'e/Å³'; null = unknown / not a density
+    periodic = true, // whether the grid wraps (index n ≡ index 0), as for a crystal cell
+    colorBy = null // colour this field's isosurface per vertex by another field (see below)
   } = {}) {
     this.nx = nx;
     this.ny = ny;
@@ -37,6 +42,27 @@ export class Field {
     this.label = label;
     this.useAbsoluteIsoValue = useAbsoluteIsoValue;
     this.isVisible = isVisible;
+
+    // Unit of `values`, as a plain-text string: 'e/bohr³' for a density in
+    // atomic units (Gaussian cube), 'e/Å³' for a VASP CHGCAR density after the
+    // division by the cell volume. Null when unknown or when the field is not a
+    // density (potentials, orbitals, ELF). Consumers that need a density in a
+    // particular unit (NCI) convert from this.
+    /** @type {string | null} */
+    this.valueUnit = valueUnit ?? null;
+
+    // Whether the grid is a periodic cell: point n along an axis is point 0
+    // again, so neighbours wrap across the boundary. True for CHGCAR/WAVECAR
+    // grids; false for a Gaussian cube, whose grid is a box around a molecule
+    // and whose boundary layer has no neighbours beyond it.
+    /** @type {boolean} */
+    this.periodic = periodic !== false;
+
+    // Per-vertex colouring of this field's isosurface by another field on the
+    // same grid: the other field is sampled at each vertex and mapped through
+    // `colormap` over [min, max]. Null draws the surface in its flat colour.
+    /** @type {{field: Field, colormap: string, min: number, max: number} | null} */
+    this.colorBy = colorBy ?? null;
 
     // Set by model/WavefunctionSource.js when this field is one band of a
     // WAVECAR, so the UI can trace a field back to its (spin, k-point, band)

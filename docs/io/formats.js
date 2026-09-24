@@ -423,7 +423,9 @@ export const FORMATS = [
     label: 'Gaussian cube',
     kind: SourceKind.TEXT,
     handledBy: HandledBy.VIEWER,
-    matchesName: (lower) => lower.includes('.cube'),
+    // `.cube`, and the `.cub` short form (NCIPLOT, Jmol examples) as a whole
+    // extension, so e.g. `.cubic` is not taken for one.
+    matchesName: (lower) => lower.includes('.cube') || /\.cub(?![a-z0-9])/.test(lower),
     sniff: sniffCube,
   },
   {

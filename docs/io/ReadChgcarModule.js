@@ -80,6 +80,27 @@ function densityScale(source, lattice) {
 }
 
 /**
+ * The unit of the fields once `densityScale` has been applied.
+ *
+ * A CHGCAR-layout file divided by the cell volume holds e/Å³: the charge
+ * density, and for a spin-polarised or noncollinear run the magnetization
+ * density, which is a difference of densities in the same unit. ELF is
+ * dimensionless, and a LOCPOT (same layout, sent here by the CHGCAR sniffer)
+ * is a potential that the volume division does not turn into a density — both
+ * get no unit. So does a degenerate cell, where the scale was left at 1.
+ *
+ * @param {string} source
+ * @param {number} scale the factor densityScale returned
+ * @param {string} fileName
+ * @returns {string | null}
+ */
+function valueUnitFor(source, scale, fileName) {
+  if (source === 'ELFCAR' || scale === 1) return null;
+  if (/locpot/i.test(String(fileName || ''))) return null;
+  return 'e/Å³';
+}
+
+/**
  * Name the parsed blocks for the format they came from.
  *
  * This parser serves both CHGCAR and ELFCAR because the file layout is the
@@ -283,6 +304,11 @@ export function readCHGCAR(text, fileName, source = 'CHGCAR') {
   // blocks the file actually held — and the derived combinations below are named
   // after the fields they are built from, so they must come second.
   labelFields(fields, source);
+  // Before the derivation, so the spin up/down and |m| fields inherit the unit
+  // from their terms (model/CompositeField.js). VASP grids are periodic cells,
+  // which is the Field default.
+  const unit = valueUnitFor(source, scale, fileName);
+  fields.forEach((field) => { field.valueUnit = unit; });
   fields.push(...deriveCombinations(fields, source));
 
   // Create volumetric field container with metadata

@@ -229,6 +229,7 @@ export function combineFields(terms, options = {}) {
     // treatment unless the caller knows better. `setActiveField` does the same
     // inference when this is left null.
     useAbsoluteIsoValue: options.useAbsoluteIsoValue ?? null,
+    ...sharedGridTraits(usable.map((t) => t.field)),
     ...stats,
   });
 
@@ -306,6 +307,7 @@ export function magnitudeField(fields, options = {}) {
     // A magnitude is non-negative, so the signed treatment would spend half the
     // isovalue slider on a surface that can never exist.
     useAbsoluteIsoValue: false,
+    ...sharedGridTraits(usable),
     ...computeFieldStats(values),
   });
 
@@ -329,6 +331,15 @@ export function recomputeComposite(composite) {
     throw new Error('recomputeComposite: field carries no derivedFrom recipe');
   }
 
+  // Only sums and magnitudes can be rebuilt here. Anything else that records a
+  // source (the NCI fields of model/NciField.js, 'nci-s' / 'nci-sl2rho') is a
+  // different operation on it — and an asynchronous one — so rebuilding it as
+  // a weighted sum would silently replace it with a copy of its source.
+  const op = composite.derivedOp ?? 'sum';
+  if (op !== 'sum' && op !== 'magnitude') {
+    throw new Error(`recomputeComposite: "${composite.label}" is a '${op}' field and cannot be rebuilt as a combination`);
+  }
+
   // `derivedOp` rather than inferring from the weights: a magnitude records its
   // terms with weight 1 so anything walking the dependency list still sees
   // them, and rebuilding it as a plain sum would be silently wrong.
@@ -349,6 +360,22 @@ export function recomputeComposite(composite) {
   composite.absMinValue = rebuilt.absMinValue;
   composite.absMaxValue = rebuilt.absMaxValue;
   return composite;
+}
+
+/**
+ * The unit and periodicity a field built from `fields` inherits: the unit only
+ * when every term carries the same one (a sum or magnitude of e/Å³ densities
+ * is still e/Å³; mixing units, or an unknown one, leaves it unknown), and
+ * periodic only when every term is.
+ * @param {Field[]} fields
+ * @returns {{valueUnit: string | null, periodic: boolean}}
+ */
+function sharedGridTraits(fields) {
+  const unit = fields[0]?.valueUnit ?? null;
+  return {
+    valueUnit: fields.every((f) => (f.valueUnit ?? null) === unit) ? unit : null,
+    periodic: fields.every((f) => f.periodic !== false),
+  };
 }
 
 /** True when two 3×3 voxel matrices agree to within float noise. */

@@ -87,6 +87,8 @@ function captureFields(structure) {
       isoValue: f.isoValue,
       useAbsoluteIsoValue: f.useAbsoluteIsoValue,
       isVisible: f.isVisible,
+      valueUnit: f.valueUnit ?? null,
+      periodic: f.periodic !== false,
       minValue: f.minValue, maxValue: f.maxValue,
       absMinValue: f.absMinValue, absMaxValue: f.absMaxValue,
       values: f.values ? float32ToBase64(f.values) : null,
@@ -935,6 +937,9 @@ function restoreFields(fieldState, structure) {
     isoValue: f.isoValue,
     useAbsoluteIsoValue: f.useAbsoluteIsoValue,
     isVisible: f.isVisible,
+    // Absent in files saved before these existed: unknown unit, periodic grid.
+    valueUnit: f.valueUnit ?? null,
+    periodic: f.periodic !== false,
     minValue: f.minValue, maxValue: f.maxValue,
     absMinValue: f.absMinValue, absMaxValue: f.absMaxValue,
     values: f.values ? base64ToFloat32(f.values) : null,
