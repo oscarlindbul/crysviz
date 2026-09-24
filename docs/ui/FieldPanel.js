@@ -10,13 +10,23 @@ import { createColorPicker } from './ColorPickerModule.js';
 import { createMaterialEditor, MATERIAL_TYPES } from './StructureInfoPanel/components/MaterialEditor.js';
 import { createFieldCatalogWidget, fieldSelectionInfoDoc } from './FieldCatalogWidget.js';
 import { createInfoButton } from './InfoPanel.js';
+import { createFieldColorByControl } from './FieldColorByControl.js';
+import { createNciControls } from './NciControls.js';
 
 export let useLogSliderScale = false; // Global variable to track log scale state for iso slider
 
+// The "Colour surface by" control (ui/FieldColorByControl.js): holds a catalog
+// subscription and possibly a colour bar, so a rebuild tears it down too.
+/** @type {{sync: () => void, destroy: () => void} | null} */
+let activeColorByControl = null;
+
 // The live field-selector widget, so a panel rebuild can tear the previous one
 // down (it holds a subscription to the catalog).
-/** @type {{destroy: () => void, refresh: () => void} | null} */
+/** @type {{destroy: () => void, refresh: () => void, select: (field: any) => void} | null} */
 let activeCatalogWidget = null;
+// The NCI block under it (ui/NciControls.js), torn down the same way.
+/** @type {{destroy: () => void, refresh: () => void} | null} */
+let activeNciControls = null;
 
 /**
  * Convert an isoSlider value (0-100) to an iso value based on the selected field's range.
@@ -283,6 +293,7 @@ export function addFieldPanel(target = "cvPanelBody-field") {
       </div>
       <div id="fieldCatalogMount"></div>
       <p id="fieldCatalogError" class="field-catalog-error" role="alert"></p>
+      <div id="nciControlsMount"></div>
     </div>
 
     <div class="control-group">
@@ -294,6 +305,8 @@ export function addFieldPanel(target = "cvPanelBody-field") {
                title="Type an exact value (e.g. 2.5e-3), then press Enter">
       </div>
     </div>
+
+    <div class="control-group" id="fieldColorByMount"></div>
 
     <div id="fieldColorToggle" class="spin-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="fieldColorContent">
     <h4>Color controls</h4>
@@ -321,6 +334,18 @@ export function addFieldPanel(target = "cvPanelBody-field") {
 
    
   `;
+
+  // Colour-by control, before the iso controls so syncToSelection() can
+  // point it at the selected field too.
+  const colorByMount = document.getElementById('fieldColorByMount');
+  if (activeColorByControl) activeColorByControl.destroy();
+  activeColorByControl = colorByMount
+    ? createFieldColorByControl(colorByMount, {
+      getField: () => fieldBrowser.selectedField,
+      getCandidates: () => fieldBrowser.availableFields,
+      catalog,
+    })
+    : null;
 
   // Wire up the isovalue slider, colour pickers and material editor first, so
   // the widget's onSelect callback can drive them.
@@ -356,11 +381,35 @@ export function addFieldPanel(target = "cvPanelBody-field") {
         // isosurface would sit in the scene unpainted until the user next
         // touched something.
         requestRender();
+        activeNciControls?.refresh(); // the SCF button follows the selection
       },
       onError: (error) => {
         // Loading a band can fail for real, recoverable reasons (a truncated
         // file, a grid too large to allocate). Say so where the user is looking
         // rather than only in the console.
+        const notice = document.getElementById('fieldCatalogError');
+        if (notice) notice.textContent = error.message;
+      },
+    });
+  }
+
+  // NCI analysis under the list (ui/NciControls.js). The getters read the live
+  // state at click time; a new file rebuilds this panel and so this block.
+  const nciMount = document.getElementById('nciControlsMount');
+  if (nciMount) {
+    if (activeNciControls) activeNciControls.destroy();
+    activeNciControls = createNciControls({
+      container: nciMount,
+      getSelectedField: () => fieldBrowser.selectedField,
+      getStructure: () => fileBrowser.selectedStructure,
+      getCatalog: () => fieldBrowser.catalog,
+      onFieldsCreated: (field) => {
+        const notice = document.getElementById('fieldCatalogError');
+        if (notice) notice.textContent = '';
+        // Through the widget, so its radio moves too; it calls onSelect above.
+        activeCatalogWidget?.select(field);
+      },
+      onError: (error) => {
         const notice = document.getElementById('fieldCatalogError');
         if (notice) notice.textContent = error.message;
       },
@@ -393,6 +442,15 @@ export function removeFieldPanel(target = "cvPanelBody-field") {
   if (activeCatalogWidget) {
     activeCatalogWidget.destroy();
     activeCatalogWidget = null;
+  }
+  if (activeNciControls) {
+    activeNciControls.destroy();
+    activeNciControls = null;
+  }
+
+  if (activeColorByControl) {
+    activeColorByControl.destroy();
+    activeColorByControl = null;
   }
 
   if (fieldControlsGroup) {
@@ -732,6 +790,9 @@ function setupFieldControlEvents(container) {
     slider.disabled = !enabled;
     isoInput.disabled = !enabled;
     absoluteValueCheckbox.disabled = !enabled;
+    // The colour-by dropdown lists fields on THIS field's grid and shows its
+    // colorBy, which may have been preset programmatically (NCI).
+    activeColorByControl?.sync();
 
     if (!field) {
       isoInput.value = ''; // the placeholder shows the em dash

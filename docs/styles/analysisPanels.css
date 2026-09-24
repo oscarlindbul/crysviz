@@ -965,6 +965,20 @@
   gap: var(--sp-3); /* 8px */
 }
 
+/* "Colour surface by" (ui/FieldColorByControl.js): field dropdown, then —
+   only while colour-by is on — the colormap dropdown and a docked colour bar
+   whose Min/Max inputs set the mapped range. */
+.field-colorby,
+.field-colorby-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+
+.field-colorby-options[hidden] {
+  display: none;
+}
+
 /* Isosurface value: slider + typed value on one row (same shape as the opacity
    row above). The readout is an INPUT rather than a span because the slider's
    100 steps cannot address a level like 2.5e-3 on a field whose maximum is
@@ -1330,6 +1344,49 @@
   border-radius: var(--radius-sm);
   font-size: var(--fs-xs);
   line-height: var(--lh-normal);
+}
+
+/* NCI analysis block under the field list (ui/NciControls.js). The two buttons
+   are .file-action-btn .planes-calc-btn, which already wrap their labels and
+   share a row; this only lays out the heading, the row and the status line. */
+.nci-controls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-top: var(--sp-4);
+}
+
+.nci-controls-title {
+  margin: 0;
+  font-size: var(--fs-sm);
+  /* Same as the "Combine fields" heading: the "i" button sits on its row. */
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.nci-controls-row {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.nci-controls-status:empty {
+  display: none;
+}
+
+.nci-controls-status {
+  margin: 0;
+  font-size: var(--fs-xs);
+  line-height: var(--lh-normal);
+  color: var(--fg-2);
+}
+
+.nci-controls-status-warning {
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--wash-1);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  color: var(--fg-1);
 }
 
 /* Cell-mismatch banner: shown when a WAVECAR was attached to a structure whose

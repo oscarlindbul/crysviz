@@ -71,7 +71,7 @@ function formatLeafMeta(meta) {
  * @param {import('../model/Field.js').Field | null} options.selectedField
  * @param {(field: import('../model/Field.js').Field) => void} options.onSelect
  * @param {(error: Error) => void} [options.onError]
- * @returns {{destroy: () => void, refresh: () => void}}
+ * @returns {{destroy: () => void, refresh: () => void, select: (field: any) => void}}
  */
 export function createFieldCatalogWidget({ container, catalog, selectedField, onSelect, onError }) {
   const radioGroupName = `fieldCatalog-${Math.random().toString(36).slice(2)}`;
@@ -118,6 +118,15 @@ export function createFieldCatalogWidget({ container, catalog, selectedField, on
     refresh() {
       renderTree();
       renderDerived();
+    },
+    /**
+     * Select a field added from outside the widget (the NCI block under it),
+     * exactly as if its radio had been clicked. Without this the widget's own
+     * idea of the current field goes stale and the radio stays on the old one.
+     * @param {import('../model/Field.js').Field} field
+     */
+    select(field) {
+      if (catalog.nodeForField(field)) select(field);
     },
   };
 
