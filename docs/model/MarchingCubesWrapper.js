@@ -13,6 +13,14 @@ const MarchingCubesBackend = Object.freeze({
     WASM: 'wasm'
 });
 
+// Smoothing method ids -> the WASM enums (MeshSmoothing / FieldFilter in
+// compiled/marching_cubes.cpp).
+const MESH_METHOD_IDS = Object.freeze({ laplacian: 1, taubin: 2, hc: 3, loop: 4, catmullClark: 5 });
+const FIELD_FILTER_IDS = Object.freeze({ gaussian: 1, tricubic: 2 });
+// Largest grid a tricubic refinement may produce. The meshed grid costs ~20
+// bytes per point in WASM (value, cached gradient, colour), so this is ~320 MB.
+const MAX_REFINED_POINTS = 16_000_000;
+
 
 function buildTriangleDistancePermutation(positions, point) {
     if (!positions || !point) return [];
@@ -97,6 +105,61 @@ class MarchingCubesWrapper {
          *  isovalue drag). Null while no colour field is set.
          *  @type {ArrayLike<number> | null} */
         this._colorValues = null;
+        /** Key of the field filter the WASM module last applied (see
+         *  setSmoothing), so an isovalue drag does not redo the blur or the
+         *  refinement. Null = must re-apply.
+         *  @type {string | null} */
+        this._filterKey = null;
+        /** What setSmoothing() actually applied, e.g. a refinement factor
+         *  lowered to stay within MAX_REFINED_POINTS.
+         *  @type {{method: string, factor?: number} | null} */
+        this.appliedSmoothing = null;
+    }
+
+    /**
+     * Apply the isosurface smoothing settings (model/Isosurface.js
+     * getIsosurfaceSmoothingSettings) to the following updateMesh() calls.
+     * Mesh methods post-process every marching-cubes mesh in WASM; field
+     * methods mesh a blurred or refined copy of the grid, rebuilt only when
+     * the settings (or the field/colour values) changed. WASM backend only.
+     *
+     * @param {{method: string, params?: Record<string, Record<string, any>>} | null} settings
+     */
+    setSmoothing(settings) {
+        if (this.backend !== MarchingCubesBackend.WASM) return;
+        const method = settings?.method ?? 'off';
+        const p = settings?.params?.[method] ?? {};
+        const num = (value, fallback) => (Number.isFinite(Number(value)) ? Number(value) : fallback);
+        const mc = this.marchingCubes;
+        const field = this.field;
+
+        const meshId = MESH_METHOD_IDS[method] ?? 0;
+        mc.setSmoothing(meshId,
+            Math.round(num(p.iterations, 0)),
+            num(method === 'hc' ? p.alpha : p.lambda, 0.5),
+            num(method === 'hc' ? p.beta : p.passband, 0.1),
+            Math.round(num(p.levels, 1)),
+            p.project !== false);
+
+        let filterId = FIELD_FILTER_IDS[method] ?? 0;
+        let a = 0;
+        let factor = 1;
+        if (filterId === FIELD_FILTER_IDS.gaussian) {
+            a = num(p.sigma, 1);
+        } else if (filterId === FIELD_FILTER_IDS.tricubic) {
+            a = p.kernel === 'bspline' ? 1 : 0;
+            factor = Math.max(1, Math.round(num(p.factor, 2)));
+            // refined points = prod((n-1)*f+1); step the factor down until it fits
+            const refined = (f) => [field.nx, field.ny, field.nz].reduce((acc, n) => acc * ((n - 1) * f + 1), 1);
+            while (factor > 1 && refined(factor) > MAX_REFINED_POINTS) factor--;
+            if (factor < 2) filterId = 0;
+        }
+        const key = `${filterId}:${a}:${factor}`;
+        if (key !== this._filterKey) {
+            mc.applyFieldFilter(filterId, a, factor, field.periodic !== false);
+            this._filterKey = key;
+        }
+        this.appliedSmoothing = filterId === FIELD_FILTER_IDS.tricubic ? { method, factor } : { method };
     }
 
     /**
@@ -124,7 +187,11 @@ class MarchingCubesWrapper {
             return false;
         }
         if (!usable) {
-            if (this._colorValues) this.marchingCubes.setColorFieldEnabled(false);
+            if (this._colorValues) {
+                // back on the source grid until setSmoothing re-applies the filter
+                this.marchingCubes.setColorFieldEnabled(false);
+                this._filterKey = null;
+            }
             this._colorValues = null;
             return false;
         }
@@ -137,6 +204,8 @@ class MarchingCubesWrapper {
             : /** @type {any} */ (colorField.values).subarray(0, size);
         MarchingCubesModule.HEAPF32.set(src, ptr >> 2);
         this._colorValues = colorField.values;
+        // a refined grid carries a refined copy of the colour field too
+        this._filterKey = null;
         return true;
     }
 

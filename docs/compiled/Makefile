@@ -62,6 +62,7 @@ NCI_EXPORTED_RUNTIME := \
 # than plain exported functions -- it hands JS a class, not a function table --
 # so its flags look different from the two C modules above.
 MC_SRC := marching_cubes.cpp
+MC_HEADERS := iso_mesh.hpp iso_smooth.hpp iso_subdivide.hpp iso_field_filters.hpp
 MC_JS_OUT := MarchCubes.js
 MC_WASM_OUT := MarchCubes.wasm
 
@@ -124,7 +125,7 @@ $(NCI_JS_OUT): $(NCI_SRC)
 # -Os and --closure 1, unlike the -O3 above: this module is loaded on every
 # page view (model/MarchingCubesWrapper.js imports it at module scope), so its
 # glue size is worth more than the last few percent of speed.
-$(MC_JS_OUT): $(MC_SRC)
+$(MC_JS_OUT): $(MC_SRC) $(MC_HEADERS)
 	$(EMCC) -Os $(MC_SRC) \
 		-lembind \
 		-s FILESYSTEM=0 \

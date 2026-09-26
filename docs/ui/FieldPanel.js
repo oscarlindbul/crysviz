@@ -12,6 +12,8 @@ import { createFieldCatalogWidget, fieldSelectionInfoDoc } from './FieldCatalogW
 import { createInfoButton } from './InfoPanel.js';
 import { createFieldColorByControl } from './FieldColorByControl.js';
 import { createNciControls } from './NciControls.js';
+import { createFieldSmoothingControl } from './FieldSmoothingControl.js';
+import { startFieldTask, isLargeField, nextPaint } from '../state/fieldTasks.js';
 
 export let useLogSliderScale = false; // Global variable to track log scale state for iso slider
 
@@ -27,6 +29,9 @@ let activeCatalogWidget = null;
 // The NCI block under it (ui/NciControls.js), torn down the same way.
 /** @type {{destroy: () => void, refresh: () => void} | null} */
 let activeNciControls = null;
+// The smoothing block in Visual controls (ui/FieldSmoothingControl.js).
+/** @type {{sync: () => void, destroy: () => void} | null} */
+let activeSmoothingControl = null;
 
 /**
  * Convert an isoSlider value (0-100) to an iso value based on the selected field's range.
@@ -308,11 +313,11 @@ export function addFieldPanel(target = "cvPanelBody-field") {
 
     <div class="control-group" id="fieldColorByMount"></div>
 
-    <div id="fieldColorToggle" class="spin-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="fieldColorContent">
-    <h4>Color controls</h4>
-    <div class="toggle-icon" id="fieldColorToggleIcon">+</div>
+    <div id="fieldVisualToggle" class="spin-toggle" role="button" tabindex="0" aria-expanded="false" aria-controls="fieldVisualContent">
+    <h4>Visual controls</h4>
+    <div class="toggle-icon" id="fieldVisualToggleIcon">+</div>
     </div>
-    <div id="fieldColorContent" class="collapsible-content" aria-hidden="true">
+    <div id="fieldVisualContent" class="collapsible-content" aria-hidden="true">
     <div class="field-color-controls">
         <label>Positive Isosurface Color:</label>
         <div id="FieldPosColorPicker"></div>
@@ -329,6 +334,9 @@ export function addFieldPanel(target = "cvPanelBody-field") {
         <!-- tracer material block: not strictly color, but it lives alongside
              the color/alpha selectors here like everywhere else -->
         <div id="fieldMaterialEditorMount"></div>
+
+        <!-- isosurface smoothing (ui/FieldSmoothingControl.js) -->
+        <div id="fieldSmoothingMount"></div>
     </div>
     </div>
 
@@ -452,6 +460,10 @@ export function removeFieldPanel(target = "cvPanelBody-field") {
     activeColorByControl.destroy();
     activeColorByControl = null;
   }
+  if (activeSmoothingControl) {
+    activeSmoothingControl.destroy();
+    activeSmoothingControl = null;
+  }
 
   if (fieldControlsGroup) {
     // NOTE: this used to walk every field disposing `__fieldMesh` /
@@ -480,9 +492,9 @@ function setupFieldControlEvents(container) {
   const absoluteValueCheckbox = document.getElementById('FieldAbsoluteValueToggle');
   const logScaleCheckbox = document.getElementById('LogSliderScaleToggle');
   const triangleSortCheckbox = document.getElementById('FieldTriangleSortToggle');
-  const fieldColorToggle = document.getElementById('fieldColorToggle');
-  const fieldColorToggleIcon = document.getElementById('fieldColorToggleIcon');
-  const fieldColorContent = document.getElementById('fieldColorContent');
+  const fieldVisualToggle = document.getElementById('fieldVisualToggle');
+  const fieldVisualToggleIcon = document.getElementById('fieldVisualToggleIcon');
+  const fieldVisualContent = document.getElementById('fieldVisualContent');
   const posColorPickerContainer = document.getElementById('FieldPosColorPicker');
   const negColorPickerContainer = document.getElementById('FieldNegColorPicker');
   const opacitySlider = document.getElementById('FieldOpacitySlider');
@@ -511,19 +523,19 @@ function setupFieldControlEvents(container) {
       { types: MATERIAL_TYPES.filter((t) => t.value !== 'glass') }));
   }
 
-  function setColorPanelOpen(open) {
-    if (!fieldColorContent || !fieldColorToggle || !fieldColorToggleIcon) return;
+  function setVisualPanelOpen(open) {
+    if (!fieldVisualContent || !fieldVisualToggle || !fieldVisualToggleIcon) return;
 
     if (open) {
-      fieldColorContent.classList.add('open');
-      fieldColorContent.setAttribute('aria-hidden', 'false');
-      fieldColorToggle.setAttribute('aria-expanded', 'true');
-      fieldColorToggleIcon.textContent = '−';
+      fieldVisualContent.classList.add('open');
+      fieldVisualContent.setAttribute('aria-hidden', 'false');
+      fieldVisualToggle.setAttribute('aria-expanded', 'true');
+      fieldVisualToggleIcon.textContent = '−';
     } else {
-      fieldColorContent.classList.remove('open');
-      fieldColorContent.setAttribute('aria-hidden', 'true');
-      fieldColorToggle.setAttribute('aria-expanded', 'false');
-      fieldColorToggleIcon.textContent = '+';
+      fieldVisualContent.classList.remove('open');
+      fieldVisualContent.setAttribute('aria-hidden', 'true');
+      fieldVisualToggle.setAttribute('aria-expanded', 'false');
+      fieldVisualToggleIcon.textContent = '+';
     }
   }
 
@@ -575,19 +587,74 @@ function setupFieldControlEvents(container) {
     }
   }
 
-  setColorPanelOpen(false);
+  // Isosurface smoothing: the settings are global (model/Isosurface.js), the
+  // change re-meshes the active field through updateField like the iso
+  // slider. Rebuilds are coalesced to one per animation frame, so a parameter
+  // drag never queues work; on a large grid the marching cubes + smoothing
+  // pass blocks for a while, so it runs as a field task whose bar is painted
+  // first, and requests arriving meanwhile collapse into one follow-up pass.
+  let smoothingScheduled = false;
+  let smoothingBusy = false;
+  let smoothingAgain = false;
+  function scheduleSmoothingRemesh() {
+    if (smoothingBusy) {
+      smoothingAgain = true;
+      return;
+    }
+    if (smoothingScheduled) return;
+    smoothingScheduled = true;
+    requestAnimationFrame(() => {
+      smoothingScheduled = false;
+      runSmoothingRemesh();
+    });
+  }
+  async function runSmoothingRemesh() {
+    const field = fieldBrowser.selectedField;
+    const structure = fileBrowser.selectedStructure;
+    if (!field || !structure?.volumetricFields || groups.activeField !== field) return;
+    if (!isLargeField(field)) {
+      updateField(field.isoValue);
+      requestRender();
+      return;
+    }
+    smoothingBusy = true;
+    const task = startFieldTask('Smoothing isosurface', { immediate: true });
+    try {
+      await nextPaint();
+      updateField(field.isoValue);
+      requestRender();
+      task.done();
+    } catch (error) {
+      task.fail();
+      console.error('Isosurface smoothing', error);
+    } finally {
+      smoothingBusy = false;
+      if (smoothingAgain) {
+        smoothingAgain = false;
+        scheduleSmoothingRemesh();
+      }
+    }
+  }
 
-  if (fieldColorToggle) {
-    fieldColorToggle.addEventListener('click', function () {
-      setColorPanelOpen(!fieldColorContent.classList.contains('open'));
+  const smoothingMount = document.getElementById('fieldSmoothingMount');
+  if (activeSmoothingControl) activeSmoothingControl.destroy();
+  activeSmoothingControl = smoothingMount
+    ? createFieldSmoothingControl(smoothingMount, { onChange: scheduleSmoothingRemesh })
+    : null;
+
+  setVisualPanelOpen(false);
+
+  if (fieldVisualToggle) {
+    fieldVisualToggle.addEventListener('click', function () {
+      setVisualPanelOpen(!fieldVisualContent.classList.contains('open'));
     });
 
-    fieldColorToggle.addEventListener('keydown', function (e) {
+    fieldVisualToggle.addEventListener('keydown', function (e) {
       // Space is reserved globally as a keyboard-shortcut modifier
       // (ui/KeyboardShortcuts.js) — Enter alone toggles this box.
       if (e.key === 'Enter') {
         e.preventDefault();
-        setColorPanelOpen(!fieldColorContent.classList.contains('open'));
+        setVisualPanelOpen(!fieldVisualContent.classList.contains('open'));
       }
     });
   }

@@ -62,6 +62,12 @@ function base64ToFloat32(b64) {
   return new Float32Array(bytes.buffer);
 }
 
+/** Every smoothing method's default parameter values (model/Isosurface.js). */
+function defaultSmoothingParams() {
+  return Object.fromEntries(SMOOTHING_METHODS.map((m) =>
+    [m.id, Object.fromEntries(m.params.map((p) => [p.key, p.default]))]));
+}
+
 /** Serialize a structure's volumetric fields for embedding in a .crysviz file.
  *  Returns undefined when there is nothing to save. */
 function captureFields(structure) {
@@ -79,6 +85,8 @@ function captureFields(structure) {
     selectedIndex,
     // Isosurface render material (pos/neg colors + opacity) — module globals.
     isoSettings: getIsosurfaceMaterialSettings(),
+    // Isosurface smoothing (active method + per-method params) — also global.
+    smoothing: getIsosurfaceSmoothingSettings(),
     fields: fields.map((f) => ({
       label: f.label,
       nx: f.nx, ny: f.ny, nz: f.nz,
@@ -102,11 +110,13 @@ import {
   StructureContainer, TrajectoryContainer, Field, FieldContainer, Force, Spin,
   getIsosurfaceMaterialSettings, setIsosurfaceMaterialSettings,
   applyMaterialSettingsToStoredIsosurfaces,
+  getIsosurfaceSmoothingSettings, setIsosurfaceSmoothingSettings, SMOOTHING_METHODS,
 } from '../model/index.js';
 import { updateAtoms } from '../render/index.js';
 import { rebuildBonds, updatePolyhedra, setActivePipeline, updateGroundPlane, setActiveField, updateField, updateForces, updateSpins, removeForces, removeSpins, setCelOutlineColor } from '../render/index.js';
 import { showTrajectoryFrame } from './TrajectoryPanel.js';
 import { fieldBrowser } from './FieldPanel.js';
+import { syncFieldSmoothingControl } from './FieldSmoothingControl.js';
 import { addDistanceMeasurement, addAngleMeasurement, serializeMeasurementRef } from '../render/MeasurementModule.js';
 import { createBondLengthControls } from './BondLengthPanel.js';
 import { rebuildRenderPipelineMenu } from './ColorPanel.js';
@@ -226,7 +236,7 @@ export function captureState({ includeFrames = false, includeFields = false } = 
   }
 
   return {
-    version: '2.16',
+    version: '2.17',
     ...(frames ? { frames, selectedFrameIndex } : {}),
     ...(fields ? { fields } : {}),
     // The viewed frame lives in `frames[selectedFrameIndex]` when frames are
@@ -962,6 +972,11 @@ function restoreFields(fieldState, structure) {
   fieldBrowser.setSelectedField(selectedIndex);
   const selected = fieldBrowser.selectedField;
   if (!selected) return;
+
+  // Smoothing before the first updateField so the surface is built with it.
+  // Files saved before 2.17 carry none: back to Off with default params.
+  setIsosurfaceSmoothingSettings(fieldState.smoothing ?? { method: 'off', params: defaultSmoothingParams() });
+  syncFieldSmoothingControl();
 
   // The saved useAbsoluteIsoValue is already on the Field (a boolean, not null),
   // so pass it explicitly rather than letting setActiveField re-derive it.

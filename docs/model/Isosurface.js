@@ -56,6 +56,173 @@ export function setIsosurfaceMaterialSettings(settings = {}) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  Isosurface smoothing — one active method, GLOBAL like the material settings
+//  above, with each method's parameters remembered separately so switching
+//  back restores them. The marching-cubes wrapper (setSmoothing in
+//  model/MarchingCubesWrapper.js) consumes these ids and param keys verbatim.
+//
+//  'mesh' methods post-process the triangle mesh ('project' snaps vertices
+//  back onto the exact isovalue afterwards); 'field' methods alter the grid
+//  before meshing. The ray/path tracers render the raw field, so mesh methods
+//  affect only the rasterised surface.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {object} SmoothingParamSpec
+ * @property {string} key
+ * @property {string} label
+ * @property {'int'|'float'|'bool'|'choice'} type
+ * @property {number} [min]
+ * @property {number} [max]
+ * @property {number} [step]
+ * @property {number|boolean|string} default
+ * @property {ReadonlyArray<{value: string, label: string}>} [choices]
+ */
+
+/**
+ * @typedef {object} SmoothingMethodSpec
+ * @property {string} id
+ * @property {string} label
+ * @property {'mesh'|'field'|null} domain
+ * @property {ReadonlyArray<SmoothingParamSpec>} params
+ */
+
+/**
+ * @typedef {object} IsosurfaceSmoothingSettings
+ * @property {string} method active method id ('off' for none)
+ * @property {Record<string, Record<string, number|boolean|string>>} params per-method values
+ */
+
+const projectParam = { key: 'project', label: 'Project onto isovalue', type: 'bool', default: true };
+
+/** @type {ReadonlyArray<SmoothingMethodSpec>} */
+export const SMOOTHING_METHODS = Object.freeze(/** @type {SmoothingMethodSpec[]} */ ([
+    { id: 'off', label: 'Off', domain: null, params: [] },
+    {
+        id: 'laplacian', label: 'Laplacian', domain: 'mesh',
+        params: [
+            { key: 'iterations', label: 'Iterations', type: 'int', min: 1, max: 50, step: 1, default: 5 },
+            { key: 'lambda', label: 'λ', type: 'float', min: 0.05, max: 1, step: 0.05, default: 0.5 },
+            projectParam,
+        ],
+    },
+    {
+        id: 'taubin', label: 'Taubin λ|μ', domain: 'mesh',
+        params: [
+            { key: 'iterations', label: 'Iterations', type: 'int', min: 1, max: 100, step: 1, default: 10 },
+            { key: 'lambda', label: 'λ', type: 'float', min: 0.05, max: 0.9, step: 0.05, default: 0.5 },
+            { key: 'passband', label: 'Pass-band', type: 'float', min: 0.01, max: 0.3, step: 0.01, default: 0.1 },
+            projectParam,
+        ],
+    },
+    {
+        id: 'hc', label: 'HC-Laplacian', domain: 'mesh',
+        params: [
+            { key: 'iterations', label: 'Iterations', type: 'int', min: 1, max: 50, step: 1, default: 10 },
+            { key: 'alpha', label: 'α', type: 'float', min: 0, max: 1, step: 0.05, default: 0.1 },
+            { key: 'beta', label: 'β', type: 'float', min: 0, max: 1, step: 0.05, default: 0.5 },
+            projectParam,
+        ],
+    },
+    {
+        id: 'loop', label: 'Loop subdivision', domain: 'mesh',
+        params: [
+            { key: 'levels', label: 'Levels', type: 'int', min: 1, max: 3, step: 1, default: 1 },
+            projectParam,
+        ],
+    },
+    {
+        id: 'catmullClark', label: 'Catmull–Clark', domain: 'mesh',
+        params: [
+            { key: 'levels', label: 'Levels', type: 'int', min: 1, max: 2, step: 1, default: 1 },
+            projectParam,
+        ],
+    },
+    {
+        id: 'tricubic', label: 'Tricubic refinement', domain: 'field',
+        params: [
+            { key: 'factor', label: 'Factor', type: 'int', min: 2, max: 4, step: 1, default: 2 },
+            {
+                key: 'kernel', label: 'Kernel', type: 'choice', default: 'catmullRom',
+                choices: [
+                    { value: 'catmullRom', label: 'Catmull-Rom' },
+                    { value: 'bspline', label: 'B-spline' },
+                ],
+            },
+        ],
+    },
+    {
+        id: 'gaussian', label: 'Gaussian pre-filter', domain: 'field',
+        params: [
+            { key: 'sigma', label: 'σ (voxels)', type: 'float', min: 0.3, max: 3, step: 0.1, default: 1.0 },
+        ],
+    },
+]).map((method) => Object.freeze({
+    ...method,
+    params: Object.freeze(method.params.map((p) => Object.freeze({
+        ...p, ...(p.choices ? { choices: Object.freeze(p.choices.map((c) => Object.freeze({ ...c }))) } : {}),
+    }))),
+})));
+
+/** @param {string} id @returns {SmoothingMethodSpec | undefined} */
+function findSmoothingMethod(id) {
+    return SMOOTHING_METHODS.find((m) => m.id === id);
+}
+
+/** Coerce one value to its spec (clamped, stepped for ints); null if unusable. */
+function sanitizeSmoothingParam(spec, value) {
+    switch (spec.type) {
+        case 'bool':
+            return typeof value === 'boolean' ? value : null;
+        case 'choice':
+            return spec.choices?.some((c) => c.value === value) ? value : null;
+        default: {
+            let v = Number(value);
+            if (typeof value === 'boolean' || value === null || value === '' || !Number.isFinite(v)) return null;
+            if (spec.type === 'int') v = Math.round(v);
+            return Math.max(spec.min ?? -Infinity, Math.min(spec.max ?? Infinity, v));
+        }
+    }
+}
+
+const _smoothing = {
+    method: 'off',
+    /** @type {Record<string, Record<string, number|boolean|string>>} */
+    params: Object.fromEntries(SMOOTHING_METHODS.map((m) =>
+        [m.id, Object.fromEntries(m.params.map((p) => [p.key, p.default]))])),
+};
+
+/** @returns {IsosurfaceSmoothingSettings} a deep copy of the live settings */
+export function getIsosurfaceSmoothingSettings() {
+    return {
+        method: _smoothing.method,
+        params: Object.fromEntries(Object.entries(_smoothing.params).map(([id, p]) => [id, { ...p }])),
+    };
+}
+
+/**
+ * Merge a (partial) setting: an unknown method becomes 'off', per-method
+ * params are clamped to their spec, unknown methods/keys are ignored.
+ * @param {{method?: string, params?: Record<string, Record<string, any>>}} [settings]
+ */
+export function setIsosurfaceSmoothingSettings(settings = {}) {
+    if (settings.method !== undefined) {
+        _smoothing.method = findSmoothingMethod(settings.method) ? settings.method : 'off';
+    }
+    const params = settings.params;
+    if (!params || typeof params !== 'object') return;
+    for (const [id, values] of Object.entries(params)) {
+        const method = findSmoothingMethod(id);
+        if (!method || !values || typeof values !== 'object') continue;
+        for (const spec of method.params) {
+            if (!(spec.key in values)) continue;
+            const v = sanitizeSmoothingParam(spec, values[spec.key]);
+            if (v !== null) _smoothing.params[id][spec.key] = v;
+        }
+    }
+}
+
 export function setIsosurfaceTriangleSortingEnabled(enabled) {
     isosurfaceTriangleSortingEnabled = Boolean(enabled);
 }
@@ -727,6 +894,9 @@ export class Isosurface extends THREE.Group{
         if (!groups.activeField) return;
 
         this._syncColorField();
+        // Smoothing is global (see SMOOTHING_METHODS); optional so an older
+        // wrapper without it still meshes plainly.
+        this.marchingCubes?.setSmoothing?.(getIsosurfaceSmoothingSettings());
         let iso = isoValue;
         if (this.marchingCubes && this.meshes.positive && (iso >= 0 || useAbsoluteIsoValue)) {
             if (useAbsoluteIsoValue) {

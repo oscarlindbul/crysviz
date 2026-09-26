@@ -7,6 +7,11 @@
 #include <vector>
 #include <emscripten/bind.h>
 
+#include "iso_mesh.hpp"
+#include "iso_smooth.hpp"
+#include "iso_subdivide.hpp"
+#include "iso_field_filters.hpp"
+
 /////////////////////////////////////
 // Marching cubes lookup tables
 /////////////////////////////////////
@@ -448,19 +453,36 @@ inline float linear_interp(float x1, float x2, float factor) {
 
 
 
+// Isosurface smoothing method ids, shared with model/MarchingCubesWrapper.js.
+// Mesh methods post-process the welded marching-cubes mesh; field methods
+// replace the grid that is meshed (see apply_field_filter).
+enum MeshSmoothing { MESH_OFF = 0, MESH_LAPLACIAN = 1, MESH_TAUBIN = 2, MESH_HC = 3, MESH_LOOP = 4, MESH_CATMULL_CLARK = 5 };
+enum FieldFilter { FIELD_OFF = 0, FIELD_GAUSSIAN = 1, FIELD_TRICUBIC = 2 };
+
 class MarchingCubes {
 public:
+	// The grid being MESHED. Equal to the source grid unless a field filter
+	// (Gaussian blur, tricubic refinement) is active, in which case these
+	// describe the filtered copy -- possibly with more points.
 	unsigned int x_step, y_step, z_step;
 	unsigned int nx, ny, nz;
 	size_t field_size;
 	size_t vertex_count;
 	float dx, dy, dz;
-
-	bool owns_field = true; // track ownership of field data for proper cleanup in destructor
 	float* field;
-	float* vertex_list;
-	float* vnormal_list;
-	float* vnormal_cache;
+
+	// The source grid as JS filled it (getField()). Always owned.
+	unsigned int src_nx, src_ny, src_nz;
+	size_t src_size;
+	float* src_field;
+	// Filtered copy of the field (and of the colour field for a refinement);
+	// empty while no field filter is active.
+	vector<float> work_field;
+	vector<float> work_color;
+
+	vector<float> vertex_list;
+	vector<float> vnormal_list;
+	vector<float> vnormal_cache; // 3 per grid point of the meshed grid, 0,0,0 = not computed yet
 
 	// Optional secondary ("colour") field, e.g. sign(lambda2)*rho for an NCI
 	// surface of s. Same grid as `field`; interpolated along each crossed edge
@@ -469,8 +491,9 @@ public:
 	// Both buffers exist only while enabled, so the default (single-field) path
 	// pays no memory, and update_vertices dispatches to a template instance
 	// without the extra work.
-	float* color_field = nullptr;
-	float* vvalue_list = nullptr;
+	float* src_color = nullptr;  // JS-filled, source grid
+	float* color_field = nullptr; // meshed grid (src_color or work_color)
+	vector<float> vvalue_list;
 
 	// Optional mask: a cube with any corner value >= mask_value produces no
 	// triangles. Jmol marks NCI grid points outside the density window as NaN
@@ -480,68 +503,140 @@ public:
 	float mask_value = INFINITY;
 	bool has_mask = false;
 
-	MarchingCubes(unsigned int resx, unsigned int resy, unsigned int resz, uintptr_t field_data, uintptr_t cache_data)
-			: MarchingCubes(resx, resy, resz) {
-		this->field = reinterpret_cast<float*>(field_data); // use provided field data (assumed to be pre-allocated and filled, and not owned by this class, so no free in destructor)
-		this->vnormal_cache = reinterpret_cast<float*>(cache_data); // use provided cache data (assumed to be pre-allocated and filled, and not owned by this class, so no free in destructor)
-		owns_field = false; // since we're using external data, we don't own it
-	}
+	// Mesh smoothing settings (set_smoothing). The grid edge each soup vertex
+	// was cut from is recorded while a method is active: it is the weld key.
+	int mesh_method = MESH_OFF;
+	int mesh_iterations = 0;
+	float mesh_a = 0.0f, mesh_b = 0.0f;
+	int mesh_levels = 0;
+	bool mesh_project = false;
+	vector<uint64_t> edge_keys;
+
 	MarchingCubes(unsigned int resx, unsigned int resy, unsigned int resz)
-			: nx(resx), ny(resy), nz(resz), x_step(1), y_step(resx), z_step(resy * resx), vertex_count(0) {
+			: vertex_count(0), src_nx(resx), src_ny(resy), src_nz(resz) {
+		src_size = (size_t)resx * resy * resz;
+		src_field = new float[src_size];
+		use_source_grid();
+	}
+
+	~MarchingCubes() {
+		delete[] src_field;
+		// The colour buffer is always owned.
+		delete[] src_color;
+	}
+
+	// Point the meshed grid at the source grid (no field filter).
+	void use_source_grid() {
+		work_field.clear(); work_field.shrink_to_fit();
+		work_color.clear(); work_color.shrink_to_fit();
+		set_mesh_grid(src_nx, src_ny, src_nz, src_field, src_color);
+	}
+
+	void set_mesh_grid(unsigned int resx, unsigned int resy, unsigned int resz, float* data, float* color) {
+		nx = resx; ny = resy; nz = resz;
 		x_step = 1;
 		y_step = resx;
 		z_step = resy * resx;
 		dx = 1.0 / (float)(resx-1);
 		dy = 1.0 / (float)(resy-1);
 		dz = 1.0 / (float)(resz-1);
-		field_size = resx * resy * resz;
-		size_t vertex_size = field_size * 5; // max 3D vertex positions
-		size_t normals_size = vertex_size * 3; // max 3D vertex normals
-		this->field = new float[field_size];
-		this->vertex_list = new float[normals_size];
-		this->vnormal_list = new float[normals_size];
-		this->vnormal_cache = new float[normals_size](); // cache initialized to 0
-	}
-	
-
-	~MarchingCubes() {
-		if (owns_field) {
-			delete[] field;
-			delete[] vnormal_cache;
-		}
-		delete[] vertex_list;
-		delete[] vnormal_list;
-		// The colour buffers are always owned, whichever constructor ran.
-		delete[] color_field;
-		delete[] vvalue_list;
+		field_size = (size_t)resx * resy * resz;
+		field = data;
+		color_field = color;
+		// the gradients belong to the grid, so any change of grid resets them
+		vnormal_cache.assign(field_size * 3, 0.0f);
 	}
 
 	/*
-	 * Allocate (true) or free (false) the colour field and the per-vertex value
-	 * list. Idempotent. After enabling, JS fills getColorField() (field_size
-	 * floats, same layout as getField()) and every updateVertices() also writes
-	 * one interpolated value per vertex to getVertexValues().
+	 * Mesh a filtered copy of the source grid instead of the grid itself.
+	 * Call again whenever JS rewrote getField() / getColorField(), since the
+	 * copy is not kept in sync.
+	 *   FIELD_OFF:      mesh the source grid
+	 *   FIELD_GAUSSIAN: a = sigma in voxels. The colour field is left as is:
+	 *                   it keeps reporting the true values at each vertex.
+	 *   FIELD_TRICUBIC: factor = upsampling factor, a = kernel (0 Catmull-Rom,
+	 *                   1 B-spline). The colour field is refined alongside.
+	 * `periodic` wraps the filter stencils (Field.periodic).
 	 */
-	void set_color_field_enabled(bool enabled) {
-		if (enabled == (color_field != nullptr)) return;
-		if (enabled) {
-			color_field = new float[field_size]();
-			vvalue_list = new float[field_size * 5](); // same vertex bound as vertex_list
+	void apply_field_filter(int method, float a, int factor, bool periodic) {
+		if (method == FIELD_GAUSSIAN && a > 0.0f) {
+			work_color.clear(); work_color.shrink_to_fit();
+			work_field.resize(src_size);
+			iso_gaussian_filter(src_field, work_field.data(), src_nx, src_ny, src_nz,
+				a, periodic, has_mask, mask_value);
+			set_mesh_grid(src_nx, src_ny, src_nz, work_field.data(), src_color);
+		} else if (method == FIELD_TRICUBIC && factor > 1) {
+			const int kernel = a >= 0.5f ? 1 : 0;
+			const unsigned int rx = iso_refined_dim(src_nx, factor);
+			const unsigned int ry = iso_refined_dim(src_ny, factor);
+			const unsigned int rz = iso_refined_dim(src_nz, factor);
+			work_field.resize((size_t)rx * ry * rz);
+			iso_refine_field(src_field, src_nx, src_ny, src_nz, factor, kernel,
+				periodic, has_mask, mask_value, work_field.data());
+			float* color = nullptr;
+			if (src_color != nullptr) {
+				work_color.resize(work_field.size());
+				iso_refine_field(src_color, src_nx, src_ny, src_nz, factor, kernel,
+					periodic, false, INFINITY, work_color.data());
+				color = work_color.data();
+			} else {
+				work_color.clear(); work_color.shrink_to_fit();
+			}
+			set_mesh_grid(rx, ry, rz, work_field.data(), color);
 		} else {
-			delete[] color_field;
-			delete[] vvalue_list;
-			color_field = nullptr;
-			vvalue_list = nullptr;
+			use_source_grid();
 		}
 	}
+	unsigned int get_mesh_nx() { return nx; }
+	unsigned int get_mesh_ny() { return ny; }
+	unsigned int get_mesh_nz() { return nz; }
+
+	/*
+	 * Mesh smoothing applied after every updateVertices():
+	 *   MESH_LAPLACIAN:     iterations, a = lambda
+	 *   MESH_TAUBIN:        iterations, a = lambda, b = pass-band k_PB
+	 *   MESH_HC:            iterations, a = alpha, b = beta
+	 *   MESH_LOOP:          levels
+	 *   MESH_CATMULL_CLARK: levels
+	 * `project` pulls the moved vertices back onto the isosurface afterwards.
+	 */
+	void set_smoothing(int method, int iterations, float a, float b, int levels, bool project) {
+		mesh_method = (method >= MESH_LAPLACIAN && method <= MESH_CATMULL_CLARK) ? method : MESH_OFF;
+		mesh_iterations = iterations;
+		mesh_a = a;
+		mesh_b = b;
+		mesh_levels = levels;
+		mesh_project = project;
+		if (mesh_method == MESH_OFF) { edge_keys.clear(); edge_keys.shrink_to_fit(); }
+	}
+
+	/*
+	 * Allocate (true) or free (false) the colour field. Idempotent. After
+	 * enabling, JS fills getColorField() (one float per source grid point, same
+	 * layout as getField()) and every updateVertices() also writes one
+	 * interpolated value per vertex to getVertexValues().
+	 */
+	void set_color_field_enabled(bool enabled) {
+		if (enabled == (src_color != nullptr)) return;
+		if (enabled) {
+			src_color = new float[src_size]();
+		} else {
+			delete[] src_color;
+			src_color = nullptr;
+			vvalue_list.clear(); vvalue_list.shrink_to_fit();
+		}
+		// a stale refined colour copy would outlive the change: back to the
+		// source grid until JS re-applies its field filter
+		use_source_grid();
+	}
 	bool get_color_field_enabled() {
-		return color_field != nullptr;
+		return src_color != nullptr;
 	}
 	uintptr_t get_color_field() {
-		return reinterpret_cast<uintptr_t>(color_field);
+		return reinterpret_cast<uintptr_t>(src_color);
 	}
 	uintptr_t get_vertex_values() {
-		return reinterpret_cast<uintptr_t>(vvalue_list);
+		return reinterpret_cast<uintptr_t>(vvalue_list.data());
 	}
 
 	void set_mask_value(float value) {
@@ -550,16 +645,16 @@ public:
 	}
 
 	uintptr_t get_field() {
-		return reinterpret_cast<uintptr_t>(field);
+		return reinterpret_cast<uintptr_t>(src_field);
 	}
 	uintptr_t get_vertex_list() {
-		return reinterpret_cast<uintptr_t>(vertex_list);
+		return reinterpret_cast<uintptr_t>(vertex_list.data());
 	}
 	uintptr_t get_vnormal_list() {
-		return reinterpret_cast<uintptr_t>(vnormal_list);
+		return reinterpret_cast<uintptr_t>(vnormal_list.data());
 	}
 	uintptr_t get_vnormal_cache() {
-		return reinterpret_cast<uintptr_t>(vnormal_cache);
+		return reinterpret_cast<uintptr_t>(vnormal_cache.data());
 	}
 	float get_vertex_count() {
 		return vertex_count;
@@ -593,14 +688,14 @@ public:
 		const int SHIFT = 16;
 		const int BIN_COUNT = 1 << (31 - SHIFT); /* 32768 */
 
-		if (field_size == 0) return 0.0f;
+		if (src_size == 0) return 0.0f;
 		if (fraction < 0.001f) fraction = 0.001f;
 		if (fraction > 0.999f) fraction = 0.999f;
 
 		std::vector<size_t> bins(BIN_COUNT, 0);
 		size_t counted = 0;
-		for (size_t i = 0; i < field_size; i++) {
-			const float a = std::fabs(field[i]);
+		for (size_t i = 0; i < src_size; i++) {
+			const float a = std::fabs(src_field[i]);
 			if (!(a > 0.0f) || !std::isfinite(a)) continue; /* zeros, NaN, inf */
 			uint32_t bits;
 			std::memcpy(&bits, &a, sizeof(bits));
@@ -613,7 +708,7 @@ public:
 		 * is accounted for -- the zeros skipped above are part of the cell and
 		 * have to count towards the enclosed volume, or a mostly-empty field
 		 * would report a level enclosing far more than asked. */
-		const double target = (double)fraction * (double)field_size;
+		const double target = (double)fraction * (double)src_size;
 		double running = 0.0;
 		for (int bin = BIN_COUNT - 1; bin >= 0; bin--) {
 			const double in_bin = (double)bins[bin];
@@ -647,34 +742,26 @@ public:
 		return 0.0f;
 	}
 
-	inline void calc_norm(size_t v, float* norm) {
-		// takes a vertex index, and 3-element array to write the normal to.
-		// Computes the normal using central differences, with forward/backward differences at the boundaries.
-		const size_t x_min = v - x_step, x_max = v + x_step;
-		const size_t y_min = v - y_step, y_max = v + y_step;
-		const size_t z_min = v - z_step, z_max = v + z_step;
 
-		if (v >= x_step && x_max < field_size) { // ensure we have neighbors to compute central difference
-			norm[0] = ( this->field[x_max] - this->field[x_min] ) / this->dx * 0.5;
-		} else if (v < x_step) {
-			norm[0] = ( this->field[x_max] - this->field[v] ) / this->dx; // forward difference at start
-		} else {
-			norm[0] = ( this->field[v] - this->field[x_min] ) / this->dx; // backward difference at end
-		}
-		if (v >= y_step && y_max < field_size) { // ensure we have neighbors to compute central difference
-			norm[1] = ( this->field[y_max] - this->field[y_min] ) / this->dy * 0.5;
-		} else if (v < y_step) {
-			norm[1] = ( this->field[y_max] - this->field[v] ) / this->dy; // forward difference at start
-		} else {
-			norm[1] = ( this->field[v] - this->field[y_min] ) / this->dy; // backward difference at end
-		}
-		if (v >= z_step && z_max < field_size) { // ensure we have neighbors to compute central difference
-			norm[2] = ( this->field[z_max] - this->field[z_min] ) / this->dz * 0.5;
-		} else if (v < z_step) {
-			norm[2] = ( this->field[z_max] - this->field[v] ) / this->dz; // forward difference at start
-		} else {
-			norm[2] = ( this->field[v] - this->field[z_min] ) / this->dz; // backward difference at end
-		}
+	inline void calc_norm(size_t v, float* norm) {
+		// takes a grid point index, and 3-element array to write the normal to.
+		// Computes the normal using central differences, with forward/backward
+		// differences at the ends of each axis (tested per axis: at i=0 the flat
+		// index v-1 would be the previous row's last point, not a neighbour).
+		const size_t k = v / z_step;
+		const size_t rem = v - k * z_step;
+		const size_t j = rem / y_step;
+		const size_t i = rem - j * y_step;
+		norm[0] = axis_diff(v, x_step, i, nx, dx);
+		norm[1] = axis_diff(v, y_step, j, ny, dy);
+		norm[2] = axis_diff(v, z_step, k, nz, dz);
+	}
+
+	inline float axis_diff(size_t v, size_t step, size_t pos, unsigned int n, float h) const {
+		if (n < 2) return 0.0f;
+		if (pos == 0) return (field[v + step] - field[v]) / h;          // forward difference at start
+		if (pos == n - 1) return (field[v] - field[v - step]) / h;     // backward difference at end
+		return (field[v + step] - field[v - step]) / h * 0.5f;         // central difference
 	}
 
 	inline void _update_norm_cache(size_t v) {
@@ -696,7 +783,7 @@ public:
 		if (abs(field1 - field2) > 1e-16) { // avoid division by zero
 			mu = (isoval - field1) / (field2 - field1);
 		}
-		
+
 		// set position
 		pos_out[0] = x1;
 		pos_out[1] = y1;
@@ -727,21 +814,30 @@ public:
 	}
 
 	void update_vertices(float isovalue) {
+		const bool record = mesh_method != MESH_OFF;
 		if (color_field != nullptr) {
-			_update_vertices<true>(isovalue);
+			if (record) _update_vertices<true, true>(isovalue);
+			else _update_vertices<true, false>(isovalue);
 		} else {
-			_update_vertices<false>(isovalue);
+			if (record) _update_vertices<false, true>(isovalue);
+			else _update_vertices<false, false>(isovalue);
 		}
+		if (record && vertex_count > 0) smooth_mesh(isovalue);
 	}
 
-	template <bool WithColor>
+	template <bool WithColor, bool RecordEdges>
 	void _update_vertices(float isovalue) {
 		float vertices_on_edge[12*3]; // flattened vertex positions for the 12 edges, each with x,y,z components
 		float vnormals_on_edge[12*3]; // flattened vertex normals for the 12 edges, each with x,y,z components
 		float values_on_edge[12]; // colour-field value per edge (WithColor only)
+		uint64_t keys_on_edge[12]; // grid edge id per edge (RecordEdges only)
 		int z_ind, y_ind, x_ind;
 		size_t vertex_index = (size_t)(-1);
 		this->vertex_count = 0;
+		vertex_list.clear();
+		vnormal_list.clear();
+		vvalue_list.clear();
+		edge_keys.clear();
 		unsigned char cube_index;
 		unsigned short edge_flags;
 		size_t cube_points[8];
@@ -753,10 +849,8 @@ public:
 		for (z_ind = 0; z_ind < nz-1; z_ind++) {
 			for (y_ind = 0; y_ind < ny-1; y_ind++) {
 				for (x_ind = 0; x_ind < nx-1; x_ind++) {
-					//printf("Processing slice (%d %d %d). Currently %zu vertices processed.\n", x_ind, y_ind, z_ind, vertex_count);
-					
 					vertex_index = z_ind * z_step + y_ind * y_step + x_ind * x_step; // index of v0 vertex for current cube in flattened field array
-					
+
 					cube_points[0] = vertex_index; 								// v0
 					cube_points[1] = vertex_index 		   + y_step			;	// v1
 					cube_points[2] = vertex_index + x_step + y_step			; 	// v2
@@ -765,7 +859,7 @@ public:
 					cube_points[5] = vertex_index 		   + y_step + z_step; 	// v5
 					cube_points[6] = vertex_index + x_step + y_step + z_step; 	// v6
 					cube_points[7] = vertex_index + x_step 			+ z_step; 	// v7
-					
+
 					// map the isosurface encapsulation to byte-formatted table index
 					cube_index = 0;
 					if (field[cube_points[0]] < isovalue) cube_index |= 1;   // v0
@@ -814,26 +908,189 @@ public:
 								&vertices_on_edge[i*3], // position output
 								&vnormals_on_edge[i*3], // normal vector output
 								&values_on_edge[i] // colour value output (WithColor only)
-							); 
+							);
+							if (RecordEdges) {
+								// a grid edge is its lower end point plus its axis;
+								// the cubes sharing it all produce the same key
+								keys_on_edge[i] = (uint64_t)std::min(v1_ind, v2_ind) * 3
+									+ (uint64_t)edge_directions[i];
+							}
 						}
 					}
 
 					for (int i = 0; triTable[cube_index][i] != 255; i++) {
 						const int edge = triTable[cube_index][i];
-						this->vertex_list[3*vertex_count] 		= vertices_on_edge[edge*3];
-						this->vertex_list[3*vertex_count + 1] 	= vertices_on_edge[edge*3 + 1];
-						this->vertex_list[3*vertex_count + 2] 	= vertices_on_edge[edge*3 + 2];
+						vertex_list.push_back(vertices_on_edge[edge*3]);
+						vertex_list.push_back(vertices_on_edge[edge*3 + 1]);
+						vertex_list.push_back(vertices_on_edge[edge*3 + 2]);
 
-						this->vnormal_list[3*vertex_count] 		= vnormals_on_edge[edge*3];
-						this->vnormal_list[3*vertex_count + 1] 	= vnormals_on_edge[edge*3 + 1];
-						this->vnormal_list[3*vertex_count + 2] 	= vnormals_on_edge[edge*3 + 2];
+						vnormal_list.push_back(vnormals_on_edge[edge*3]);
+						vnormal_list.push_back(vnormals_on_edge[edge*3 + 1]);
+						vnormal_list.push_back(vnormals_on_edge[edge*3 + 2]);
 						if (WithColor) {
-							this->vvalue_list[vertex_count] = values_on_edge[edge];
+							vvalue_list.push_back(values_on_edge[edge]);
+						}
+						if (RecordEdges) {
+							edge_keys.push_back(keys_on_edge[edge]);
 						}
 						this->vertex_count++;
 					}
 				}
 			}
+		}
+	}
+
+	/////////////////////////////////////
+	// Mesh smoothing
+	/////////////////////////////////////
+
+	// Cell of the meshed grid containing normalised-box point p, and the
+	// fractional position inside it. Points outside the box are clamped.
+	inline void locate(const float* p, size_t* base, float* t) const {
+		const unsigned int n[3] = {nx, ny, nz};
+		const float h[3] = {dx, dy, dz};
+		size_t idx[3];
+		for (int a = 0; a < 3; a++) {
+			float g = p[a] / h[a];
+			const float gmax = (float)(n[a] - 1);
+			if (!(g > 0.0f)) g = 0.0f;
+			if (g > gmax) g = gmax;
+			size_t i0 = (size_t)g;
+			if (i0 >= n[a] - 1) i0 = n[a] - 2;
+			idx[a] = i0;
+			t[a] = g - (float)i0;
+		}
+		*base = idx[0] * x_step + idx[1] * y_step + idx[2] * z_step;
+	}
+
+	// Trilinear sample at normalised-box point p of the field value, its
+	// gradient (from the cached central differences) and, when `color` is
+	// given, the colour field.
+	void sample(const float* p, float* value, float* grad, float* color) {
+		size_t base;
+		float t[3];
+		locate(p, &base, t);
+		*value = 0.0f;
+		grad[0] = grad[1] = grad[2] = 0.0f;
+		if (color) *color = 0.0f;
+		for (int c = 0; c < 8; c++) {
+			const int ox = c & 1, oy = (c >> 1) & 1, oz = (c >> 2) & 1;
+			const size_t v = base + ox * x_step + oy * y_step + oz * z_step;
+			const float w = (ox ? t[0] : 1.0f - t[0]) * (oy ? t[1] : 1.0f - t[1]) * (oz ? t[2] : 1.0f - t[2]);
+			if (w == 0.0f) continue;
+			_update_norm_cache(v);
+			*value += w * field[v];
+			grad[0] += w * vnormal_cache[3*v];
+			grad[1] += w * vnormal_cache[3*v + 1];
+			grad[2] += w * vnormal_cache[3*v + 2];
+			if (color) *color += w * color_field[v];
+		}
+	}
+
+	/*
+	 * Post-process the triangle soup of the last update_vertices() with the
+	 * active mesh method, then write it back as a soup (vertex_list etc.), so
+	 * the JS side sees the same layout either way.
+	 */
+	void smooth_mesh(float isovalue) {
+		IsoMesh m;
+		weld(m);
+
+		if (mesh_method == MESH_LOOP) {
+			iso_subdivide_loop(m, mesh_levels);
+		} else if (mesh_method == MESH_CATMULL_CLARK) {
+			iso_subdivide_catmull_clark(m, mesh_levels);
+		}
+		const MeshTopology topo = build_topology(m);
+		if (mesh_method == MESH_LAPLACIAN) {
+			iso_smooth_laplacian(m, topo, mesh_iterations, mesh_a);
+		} else if (mesh_method == MESH_TAUBIN) {
+			iso_smooth_taubin(m, topo, mesh_iterations, mesh_a, iso_taubin_mu(mesh_a, mesh_b));
+		} else if (mesh_method == MESH_HC) {
+			iso_smooth_hc(m, topo, mesh_iterations, mesh_a, mesh_b);
+		}
+
+		const uint32_t nv = m.vertex_count();
+		const bool with_color = color_field != nullptr;
+		const float max_step = std::min(dx, std::min(dy, dz));
+		vector<float> normals((size_t)nv * 3);
+		vector<float> values(with_color ? nv : 0);
+		for (uint32_t v = 0; v < nv; v++) {
+			float* p = &m.pos[3*v];
+			float f, g[3], c;
+			sample(p, &f, g, with_color ? &c : nullptr);
+			// Newton steps back onto f = iso along the gradient. Rim vertices
+			// stay where marching cubes put them (on the isovalue already), so
+			// the periodic copies keep meeting.
+			if (mesh_project && !topo.boundary[v]) {
+				for (int it = 0; it < 2; it++) {
+					const float g2 = g[0]*g[0] + g[1]*g[1] + g[2]*g[2];
+					if (!(g2 > 1e-30f)) break;
+					const float s = (f - isovalue) / g2;
+					float step[3] = {s * g[0], s * g[1], s * g[2]};
+					const float len = std::sqrt(step[0]*step[0] + step[1]*step[1] + step[2]*step[2]);
+					if (!std::isfinite(len)) break;
+					if (len > max_step) {
+						const float k = max_step / len;
+						step[0] *= k; step[1] *= k; step[2] *= k;
+					}
+					for (int a = 0; a < 3; a++) p[a] = std::min(1.0f, std::max(0.0f, p[a] - step[a]));
+					sample(p, &f, g, with_color ? &c : nullptr);
+				}
+			}
+			normals[3*v] = g[0];
+			normals[3*v + 1] = g[1];
+			normals[3*v + 2] = g[2];
+			if (with_color) values[v] = c;
+		}
+
+		// back to a soup
+		const size_t nt = m.triangle_count();
+		vertex_count = nt * 3;
+		vertex_list.resize(vertex_count * 3);
+		vnormal_list.resize(vertex_count * 3);
+		vvalue_list.resize(with_color ? vertex_count : 0);
+		for (size_t k = 0; k < vertex_count; k++) {
+			const uint32_t v = m.tri[k];
+			for (int a = 0; a < 3; a++) {
+				vertex_list[3*k + a] = m.pos[3*v + a];
+				vnormal_list[3*k + a] = normals[3*v + a];
+			}
+			if (with_color) vvalue_list[k] = values[v];
+		}
+	}
+
+	// Soup -> indexed mesh: soup vertices cut from the same grid edge are
+	// the same vertex.
+	void weld(IsoMesh& m) {
+		const size_t n = vertex_count;
+		vector<uint32_t> order(n);
+		for (size_t i = 0; i < n; i++) order[i] = (uint32_t)i;
+		std::sort(order.begin(), order.end(), [this](uint32_t a, uint32_t b) {
+			return edge_keys[a] < edge_keys[b];
+		});
+		vector<uint32_t> remap(n);
+		m.pos.reserve(n / 3 + 16);
+		for (size_t i = 0; i < n;) {
+			const uint32_t id = m.vertex_count();
+			const uint32_t first = order[i];
+			m.pos.push_back(vertex_list[3*first]);
+			m.pos.push_back(vertex_list[3*first + 1]);
+			m.pos.push_back(vertex_list[3*first + 2]);
+			size_t j = i;
+			while (j < n && edge_keys[order[j]] == edge_keys[first]) remap[order[j++]] = id;
+			i = j;
+		}
+		// Colour values are re-sampled at the final positions (smooth_mesh),
+		// so the mesh does not need to carry them.
+		m.has_val = false;
+		m.tri.reserve(n);
+		for (size_t t = 0; t + 2 < n; t += 3) {
+			const uint32_t a = remap[t], b = remap[t + 1], c = remap[t + 2];
+			if (a == b || b == c || c == a) continue;
+			m.tri.push_back(a);
+			m.tri.push_back(b);
+			m.tri.push_back(c);
 		}
 	}
 };
@@ -846,7 +1103,6 @@ EMSCRIPTEN_BINDINGS(marching_cubes_module) {
 	emscripten::function("reorderArrayByPermutation", &reorderArrayByPermutation);
 	emscripten::class_<MarchingCubes>("MarchingCubes")
 		.constructor<unsigned int, unsigned int, unsigned int>()
-		.constructor<unsigned int, unsigned int, unsigned int, uintptr_t, uintptr_t>()
 		.function("getField", &MarchingCubes::get_field)
 		.function("getVertices", &MarchingCubes::get_vertex_list)
 		.function("getNormals", &MarchingCubes::get_vnormal_list)
@@ -858,5 +1114,10 @@ EMSCRIPTEN_BINDINGS(marching_cubes_module) {
 		.function("getColorField", &MarchingCubes::get_color_field)
 		.function("getVertexValues", &MarchingCubes::get_vertex_values)
 		.function("setMaskValue", &MarchingCubes::set_mask_value)
+		.function("applyFieldFilter", &MarchingCubes::apply_field_filter)
+		.function("getMeshNx", &MarchingCubes::get_mesh_nx)
+		.function("getMeshNy", &MarchingCubes::get_mesh_ny)
+		.function("getMeshNz", &MarchingCubes::get_mesh_nz)
+		.function("setSmoothing", &MarchingCubes::set_smoothing)
 		.function("updateVertices", &MarchingCubes::update_vertices);
 }

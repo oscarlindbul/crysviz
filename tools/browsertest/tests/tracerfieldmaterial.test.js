@@ -266,14 +266,14 @@ const CONVERGED = 56; // pixel shots are taken at convergence (Monte-Carlo avera
     const options = select ? Array.from(select.options).map((o) => o.value) : [];
     return {
       hasEditor: !!editor,
-      inColorControls: !!editor?.closest('#fieldColorContent'),
+      inVisualControls: !!editor?.closest('#fieldVisualContent'),
       optionCount: options.length,
       hasGlass: options.includes('glass'),
       options,
     };
   });
-  H.check('Field window hosts a glass-free MaterialEditor in the Color controls section',
-    gui.hasEditor && gui.inColorControls && gui.optionCount === 4 && gui.hasGlass === false,
+  H.check('Field window hosts a glass-free MaterialEditor in the Visual controls section',
+    gui.hasEditor && gui.inVisualControls && gui.optionCount === 4 && gui.hasGlass === false,
     JSON.stringify(gui));
 
   await H.setSelect(page, 'renderPipelineMenu', 'depthpeel');

@@ -979,6 +979,61 @@
   display: none;
 }
 
+/* Isosurface smoothing (ui/FieldSmoothingControl.js), in Visual controls:
+   method dropdown, one-line help, then the active method's parameter rows. */
+.field-smoothing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+
+.field-smoothing-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.field-smoothing-head label {
+  margin: 0;
+}
+
+.field-smoothing-head select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* label | slider | readout, one row per parameter */
+.field-smoothing-params {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 3.5ch;
+  align-items: center;
+  column-gap: var(--sp-2);
+  row-gap: var(--sp-1);
+  font-size: var(--fs-xs);
+}
+
+.field-smoothing-params[hidden] {
+  display: none;
+}
+
+.field-smoothing-params label {
+  margin: 0;
+}
+
+.field-smoothing-params input[type="range"] {
+  min-width: 0;
+  width: 100%;
+}
+
+.field-smoothing-wide {
+  grid-column: 2 / -1;
+  min-width: 0;
+}
+
+.field-smoothing-wide-row {
+  grid-column: 1 / -1;
+}
+
 /* Isosurface value: slider + typed value on one row (same shape as the opacity
    row above). The readout is an INPUT rather than a span because the slider's
    100 steps cannot address a level like 2.5e-3 on a field whose maximum is

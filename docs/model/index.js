@@ -40,4 +40,5 @@ export {
   Isosurface, getIsosurfaceMaterialSettings, setIsosurfaceMaterialSettings,
   getIsosurfaceTriangleSortingEnabled, setIsosurfaceTriangleSortingEnabled,
   applyMaterialSettingsToStoredIsosurfaces, updateStoredIsosurfaceRenderOrder,
+  SMOOTHING_METHODS, getIsosurfaceSmoothingSettings, setIsosurfaceSmoothingSettings,
 } from './Isosurface.js';

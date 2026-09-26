@@ -19,7 +19,8 @@ Open this button again with one of those files loaded and you get the notes spec
   **Absolute Isosurface Values** is on, so the slider sweeps 0 → max.
 - Data that straddles zero (a molecular orbital in a cube file, a spin density, a difference of two
   fields) should have it off: the slider then runs from the most negative value through zero to the
-  most positive, and the two colours under **Color controls** show the sign of each lobe.
+  most positive, and the two colours under **Visual controls** show the sign of each lobe.
+- **Visual controls** also holds **Smoothing**; its (i) button explains the methods.
 - **Logarithmic Slider Scale** helps whenever the values span orders of magnitude, which is the
   normal case for densities and rarely the case for anything bounded.
 
