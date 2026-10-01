@@ -6,8 +6,10 @@ read.
 
 What the entries are depends on the file the panel was opened from, and this list adapts to it:
 
-- **Cube files** (`.cube`) hold a single grid, labelled from the two comment lines at the top of
-  the file — so whatever the code that wrote it called the data is what you see here.
+- **Cube files** (`.cube`, `.cub`) hold one grid, labelled from the description on the second line
+  of the file (the first line when the second is just the "OUTER LOOP" boilerplate) — so whatever
+  the code that wrote it called the data is what you see here. A Gaussian Gradient cube lists the
+  density and its three derivatives, an orbital cube one entry per orbital (`MO n`).
 - **CHGCAR / ELFCAR** files list one entry per data block, all parsed up front.
 - **WAVECAR** files list bands grouped by spin and k-point, each loaded on demand.
 

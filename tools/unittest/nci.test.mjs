@@ -20,6 +20,11 @@ import {
   promolecularDensityWithModule,
   sym3EigvalsWithModule,
 } from '../../docs/math/nci-backend-wasm.js';
+import { parseCube } from '../../docs/io/cubeParse.js';
+import { boxedCubeLayout } from '../../docs/io/cubeLayout.js';
+import { Field } from '../../docs/model/Field.js';
+import { createNciFields } from '../../docs/model/NciField.js';
+import { cartToFractional, invert3x3, transpose3x3 } from '../../docs/math/index.js';
 
 const C_S = 1 / (2 * Math.cbrt(3 * Math.PI * Math.PI));
 const S_CAP = 2.0;
@@ -595,4 +600,165 @@ test('computeNci rejects malformed requests', async () => {
   await assert.rejects(computeNci({ kind: 'scf', nx: 2, ny: 2, nz: 2, periodic: false,
     voxel: [[1, 0, 0], [2, 0, 0], [0, 0, 1]], values: new Float32Array(8) }), /singular/);
   await assert.rejects(computeNci({ kind: 'promolecular', nx: 2, ny: 2, nz: 2, voxel, periodic: false }), /atoms/);
+});
+
+/* ------------------------------------------------------------------ *
+ * 7. Cube files: the Field.periodic flag decides the wrap
+ *
+ * A cube loads periodic by default and as a finite block only when the user
+ * says so (io/ReadCubeModule.js buildCubeStructure). NCI follows the flag:
+ * a periodic grid wraps its neighbours, a block drops its boundary layer and
+ * gets no periodic atom images. The fields below are built from parseCube's
+ * output exactly as buildCubeStructure builds them (that module pulls in the
+ * renderer and does not load under node; the browser test cubereader.test.js
+ * covers it end to end).
+ * ------------------------------------------------------------------ */
+
+const CUBE_N = 12;
+const CUBE_STEP = 0.5; // bohr
+const CUBE_ORIGIN = [-1, -2, -3]; // bohr
+
+/** Periodic sum of a Gaussian density centred at fractional `centre`, as cube text in bohr. */
+function periodicGaussianCube(centre, { atoms = [] } = {}) {
+  const n = CUBE_N;
+  const L = n * CUBE_STEP;
+  const sigma = 1.0;
+  const rho = (i, j, k) => {
+    let sum = 0;
+    const p = [i, j, k].map((x) => x * CUBE_STEP);
+    for (let a = -1; a <= 1; a++) {
+      for (let b = -1; b <= 1; b++) {
+        for (let c = -1; c <= 1; c++) {
+          const d = [p[0] - (centre[0] + a) * L, p[1] - (centre[1] + b) * L, p[2] - (centre[2] + c) * L];
+          sum += 0.03 * Math.exp(-(d[0] ** 2 + d[1] ** 2 + d[2] ** 2) / (2 * sigma * sigma));
+        }
+      }
+    }
+    return sum;
+  };
+  const lines = ['NCI wrap test', 'Electron density from Total SCF Density',
+    `${atoms.length} ${CUBE_ORIGIN.join(' ')}`,
+    `${n} ${CUBE_STEP} 0 0`, `${n} 0 ${CUBE_STEP} 0`, `${n} 0 0 ${CUBE_STEP}`,
+    ...atoms.map(({ Z, pos }) => `${Z} ${Z}.0 ${pos.join(' ')}`)];
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      const rec = [];
+      for (let k = 0; k < n; k++) rec.push(rho(i, j, k).toExponential(8));
+      for (let s = 0; s < rec.length; s += 6) lines.push(rec.slice(s, s + 6).join(' '));
+    }
+  }
+  return lines.join('\n');
+}
+
+/** The Field buildCubeStructure makes for dataset 0, with the given periodicity and origin. */
+function cubeField(cube, periodic, origin = [0, 0, 0]) {
+  return new Field({
+    nx: cube.grid[0], ny: cube.grid[1], nz: cube.grid[2], origin: [...origin],
+    voxel: cube.voxel.map((row) => [...row]), values: cube.values[0], component: 0,
+    label: cube.datasetLabels[0], valueUnit: cube.datasetUnits[0], periodic,
+  });
+}
+
+const onBoundary = (i, j, k, n) => [i, j, k].some((x) => x === 0 || x === n - 1);
+
+test('NCI on a periodic cube wraps its neighbours; on a block cube it drops the boundary layer', async () => {
+  const n = CUBE_N;
+  const centre = [0.02, 0.5, 0.5]; // straddles the x = 0 face, so the wrap matters there
+  const cube = parseCube(periodicGaussianCube(centre));
+  assert.equal(cube.datasetUnits[0], 'e/bohr³');
+
+  const periodic = await createNciFields(cubeField(cube, true), { kind: 'scf' });
+  const block = await createNciFields(cubeField(cube, false), { kind: 'scf' });
+  assert.equal(periodic.sField.periodic, true);
+  assert.equal(periodic.colourField.periodic, true);
+  assert.equal(block.sField.periodic, false);
+  assert.equal(block.colourField.periodic, false);
+
+  // Wrapped: rolling the density by whole grid steps rolls the NCI result,
+  // boundary points included, which only holds when neighbours wrap.
+  const shift = [5, 3, 7];
+  const rolled = parseCube(periodicGaussianCube(centre.map((c, a) => c + shift[a] / n)));
+  const moved = await createNciFields(cubeField(rolled, true), { kind: 'scf' });
+  let maxDiff = 0;
+  let boundaryIncluded = 0;
+  for (let k = 0; k < n; k++) {
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const src = i + n * (j + n * k);
+        const dst = ((i + shift[0]) % n) + n * (((j + shift[1]) % n) + n * ((k + shift[2]) % n));
+        maxDiff = Math.max(maxDiff, Math.abs(periodic.sField.values[src] - moved.sField.values[dst]),
+          Math.abs(periodic.colourField.values[src] - moved.colourField.values[dst]));
+        if (onBoundary(i, j, k, n) && periodic.sField.values[src] < S_CAP) boundaryIncluded++;
+      }
+    }
+  }
+  assert.ok(maxDiff < 1e-4, `periodic NCI is translation invariant: max diff ${maxDiff}`);
+  assert.ok(boundaryIncluded > 0, 'the periodic boundary layer has real values');
+
+  // Block: every boundary point is excluded (s = sCap, sign(λ2)ρ = 0), and
+  // deep inside the grid, where no stencil reaches the edge, the result is the
+  // periodic one.
+  let interiorDiff = 0;
+  for (let k = 0; k < n; k++) {
+    for (let j = 0; j < n; j++) {
+      for (let i = 0; i < n; i++) {
+        const idx = i + n * (j + n * k);
+        if (onBoundary(i, j, k, n)) {
+          assert.equal(block.sField.values[idx], S_CAP, `block boundary s at ${i},${j},${k}`);
+          assert.equal(block.colourField.values[idx], 0, `block boundary sign(λ2)ρ at ${i},${j},${k}`);
+        } else if ([i, j, k].every((x) => x >= 2 && x <= n - 3)) {
+          interiorDiff = Math.max(interiorDiff, Math.abs(block.sField.values[idx] - periodic.sField.values[idx]));
+        }
+      }
+    }
+  }
+  assert.ok(interiorDiff < 1e-5, `block interior matches the periodic result: ${interiorDiff}`);
+  assert.ok(block.info.included < periodic.info.included, 'the block drops points the periodic grid keeps');
+});
+
+test('promolecular NCI on a cube: periodic adds atom images, a block (padded box, shifted origin) does not', async () => {
+  // One H atom near the x = 0 face of the grid, in bohr.
+  const atomBohr = [CUBE_ORIGIN[0] + 0.3, CUBE_ORIGIN[1] + 3, CUBE_ORIGIN[2] + 3];
+  const cube = parseCube(periodicGaussianCube([0.5, 0.5, 0.5], { atoms: [{ Z: 1, pos: atomBohr }] }));
+  const atomFracInGrid = [0, 1, 2].map((a) => (atomBohr[a] - CUBE_ORIGIN[a]) / (CUBE_N * CUBE_STEP));
+  const elements = ['H'];
+  const fracIn = (lattice, cart) => cartToFractional(cart, lattice, invert3x3(transpose3x3(lattice)));
+
+  // Periodic load: the cell is the grid box and atoms are shifted by the origin.
+  const periodicStructure = {
+    lattice: cube.lattice, elements,
+    atoms: [{ position: fracIn(cube.lattice, cube.atoms[0].position.map((c, k) => c - cube.origin[k])) }],
+  };
+  const periodic = await createNciFields(cubeField(cube, true), { kind: 'promolecular', structure: periodicStructure });
+
+  // Block load: a padded box around atoms and grid, the field at layout.fieldOrigin.
+  const layout = boxedCubeLayout(cube);
+  const blockStructure = { lattice: layout.lattice, elements, atoms: [{ position: fracIn(layout.lattice, layout.positions[0]) }] };
+  const block = await createNciFields(cubeField(cube, false, layout.fieldOrigin),
+    { kind: 'promolecular', structure: blockStructure });
+
+  // References straight from the backend, atoms fractional in the grid's cell.
+  const base = {
+    kind: 'promolecular', nx: CUBE_N, ny: CUBE_N, nz: CUBE_N, voxel: cube.voxel,
+    atoms: { Z: [1], frac: [atomFracInGrid] },
+  };
+  const refPeriodic = await computeNci({ ...base, periodic: true });
+  const refBlock = await computeNci({ ...base, periodic: false });
+  const maxDiff = (a, b) => a.reduce((m, x, i) => Math.max(m, Math.abs(x - b[i])), 0);
+  assert.ok(maxDiff(periodic.sField.values, refPeriodic.s) < 1e-5, 'periodic cube = periodic request');
+  assert.ok(maxDiff(block.sField.values, refBlock.s) < 1e-5,
+    'block cube = non-periodic request with the atom placed relative to the field origin');
+  assert.ok(maxDiff(block.colourField.values, refBlock.sl2rho) < 1e-7);
+
+  // The image of the atom across the x = 0 face reaches the far side of a
+  // periodic grid only: the density there differs between the two.
+  const n = CUBE_N;
+  let farSideDiffers = 0;
+  for (let k = 2; k < n - 2; k++) {
+    for (let j = 2; j < n - 2; j++) {
+      const idx = (n - 2) + n * (j + n * k);
+      if (Math.abs(periodic.colourField.values[idx] - block.colourField.values[idx]) > 1e-8) farSideDiffers++;
+    }
+  }
+  assert.ok(farSideDiffers > 0, 'periodic images change the far side of the grid');
 });

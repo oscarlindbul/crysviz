@@ -99,18 +99,21 @@ function latticesAgree(a, b) {
  * and positions fractional with respect to the FIELD's grid cell.
  *
  * Atom positions are stored fractional with respect to `structure.lattice`.
- * For a cube or CHGCAR that is the grid's own cell and they pass straight
- * through; when the field came from another cell (a WAVECAR attached to a
- * structure of a different shape), they go through Cartesian into the grid's
- * frame, which is also the frame the isosurface is drawn in (model/Isosurface.js
- * places vertices with the field's voxel vectors).
+ * For a periodic cube or a CHGCAR that is the grid's own cell and they pass
+ * straight through; when the field came from another cell (a WAVECAR attached
+ * to a structure of a different shape, or a cube loaded as a finite block,
+ * whose structure cell is a padded box and whose grid starts at
+ * `field.origin` inside it — model/fieldGeometry.js), they go through
+ * Cartesian, less the field origin, into the grid's frame: grid point i at
+ * i * voxel, which is what the backend evaluates.
  *
  * @returns {{Z: number[], frac: number[][], ignored: string[], clamped: string[]}}
  */
 function promolecularAtoms(structure, field) {
   const atoms = structure?.atoms ?? [];
   const fieldLattice = gridLattice(field);
-  const sameCell = latticesAgree(structure?.lattice, fieldLattice);
+  const origin = [0, 1, 2].map((k) => field.origin?.[k] ?? 0);
+  const sameCell = origin.every((c) => c === 0) && latticesAgree(structure?.lattice, fieldLattice);
   const toFieldInverse = sameCell ? null : invert3x3(transpose3x3(fieldLattice));
 
   const Z = [];
@@ -133,7 +136,8 @@ function promolecularAtoms(structure, field) {
     Z.push(z);
     frac.push(sameCell
       ? [position[0], position[1], position[2]]
-      : cartToFractional(fracToCartPoint(position, structure.lattice), fieldLattice, toFieldInverse));
+      : cartToFractional(fracToCartPoint(position, structure.lattice).map((c, k) => c - origin[k]),
+        fieldLattice, toFieldInverse));
   });
 
   return { Z, frac, ignored: [...ignored], clamped: [...clamped] };

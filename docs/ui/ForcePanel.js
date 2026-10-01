@@ -5,6 +5,7 @@ import { registerColorBarSource } from './ColorBarRegistry.js';
 import { computeAutoRange } from '../utils/index.js';
 import { addForceHistogramPanel } from './AnalysisPanels/ForceHistogram.js';
 import { makeSectionHeadline } from './panels/sectionHeadline.js';
+import { saveArrowStyle, scheduleArrowStyleSave, applyUserArrowRange } from './ArrowStylePrefs.js';
 
 const FORCE_COLORBAR_FLOATING_ID = 'forceColorBarFloating';
 
@@ -157,6 +158,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
   sliderValue.className = "cv-force-value";
   sliderValue.textContent = (general.forceScale ?? 1.0).toFixed(2);
   const slider = /** @type {any} */ (document.createElement("input"));
+  slider.id = "forceScaleSlider";
   slider.type = "range";
   slider.min = 0.1; slider.max = 10; slider.step = 0.1;
   slider.value = general.forceScale ?? 1.0;
@@ -174,6 +176,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
   widthValue.className = "cv-force-value";
   widthValue.textContent = (general.forceRadius ?? 0.1).toFixed(2);
   const widthSlider = /** @type {any} */ (document.createElement("input"));
+  widthSlider.id = "forceRadiusSlider";
   widthSlider.type = "range";
   widthSlider.min = 0.01; widthSlider.max = 0.15; widthSlider.step = 0.01;
   widthSlider.value = general.forceRadius ?? 0.1;
@@ -205,6 +208,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
   colorMapRow.className = "cv-force-colormap";
 
   const colorMapSelect = document.createElement("select");
+  colorMapSelect.id = "forceColorMapSelect";
   colorMapSelect.className = "cv-scene-select cv-scene-select--flex";
 
   // Same set/order SpinPanel.js offers, so the two panels read as one
@@ -357,9 +361,14 @@ export function addForcePanel(target = "cvPanelBody-forces") {
           general.forceMin = min;
           general.forceMax = max;
           redraw();
+          saveArrowStyle('force', ['min', 'max']);
         },
-        onScaleChange: (scale) => applyLogScale(scale === "log"),
-        onAutoRange: () => applyAutoRange(),
+        onScaleChange: (scale) => applyLogScale(scale === "log", true),
+        onAutoRange: () => applyAutoRange(true),
+        onLegendChange: (legend) => {
+          general.forceLegendText = legend;
+          saveArrowStyle('force', ['legendText']);
+        },
         isScaleLocked: () => logLengthCheckbox.checked,
       });
       if (general.forceColorBarFloating && general.forceColorBarFloatPos) {
@@ -395,7 +404,10 @@ export function addForcePanel(target = "cvPanelBody-forces") {
   // layout-menu "Log Scale" item (ColorBarWidget.js's onScaleChange) — either
   // one can flip it, and both stay in sync since this is the only place that
   // actually applies the change.
-  function applyLogScale(isLog) {
+  // `save`: a user edit (checkbox, colour-bar menu) persists it per
+  // structure (ui/ArrowStylePrefs.js); the internal "log length" call saves
+  // through its own handler.
+  function applyLogScale(isLog, save = false) {
     general.forceColorScale = isLog ? "log" : "linear";
     // log10(0) is -Infinity, so a min of 0 (the usual "no forces yet"
     // default, or just what the auto-computed range rounds down to) breaks
@@ -408,6 +420,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     logCheckbox.checked = isLog;
     colorBarInstance?.update(currentColorMap(), general.forceColorScale);
     redraw();
+    if (save) saveArrowStyle('force', ['colorScale']);
   }
 
   // Shared by the Auto Range button and the layout menu's own "Auto Range"
@@ -415,7 +428,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
   // currently on the structure (not whatever was last typed/loaded), padded
   // 20% of the data's own span on each side (computeAutoRange) so values
   // right at the extremes don't read as clipped/off-scale.
-  function applyAutoRange() {
+  function applyAutoRange(save = false) {
     const structure = fileBrowser.selectedStructure;
     if (!structure?.forces?.length) return;
     const magnitudes = structure.forces.map((force) => {
@@ -432,8 +445,9 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     general.forceMax = max;
     colorBarInstance?.setRange(min, max);
     redraw();
+    if (save) saveArrowStyle('force', ['min', 'max']);
   }
-  autoRangeBtn.addEventListener("click", applyAutoRange);
+  autoRangeBtn.addEventListener("click", () => applyAutoRange(true));
 
   // --- Event listeners ---
   slider.addEventListener("input", () => {
@@ -443,6 +457,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     sliderValue.textContent = val.toFixed(2);
     general.forceScale = val;
     redraw();
+    scheduleArrowStyleSave('force', ['scale']);
   });
 
   widthSlider.addEventListener("input", () => {
@@ -450,6 +465,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     widthValue.textContent = val.toFixed(2);
     general.forceRadius = val;
     redraw();
+    scheduleArrowStyleSave('force', ['radius']);
   });
 
   logLengthCheckbox.addEventListener("change", () => {
@@ -460,6 +476,7 @@ export function addForcePanel(target = "cvPanelBody-forces") {
       redraw();
     }
     syncLogScaleLock();
+    saveArrowStyle('force', ['lengthLogScale', 'colorScale']);
   });
 
   colorMapSelect.addEventListener("change", () => {
@@ -475,10 +492,11 @@ export function addForcePanel(target = "cvPanelBody-forces") {
     }
 
     redraw();
+    saveArrowStyle('force', ['colorMap']);
   });
 
   logCheckbox.addEventListener("change", () => {
-    applyLogScale(logCheckbox.checked);
+    applyLogScale(logCheckbox.checked, true);
   });
 
   // --- Function to create species visibility toggles ---
@@ -558,6 +576,8 @@ export function addForcePanel(target = "cvPanelBody-forces") {
 
   // Initialize species visibility toggles, color bar, and the no-forces note
   createSpeciesVisibilityToggles();
-  refreshColorBarVisibility();
+  // A range the user set (or restored) for this structure wins over one
+  // recomputed from the data (ui/ArrowStylePrefs.js).
+  refreshColorBarVisibility(applyUserArrowRange('force'));
   updateNoForcesNote();
 }

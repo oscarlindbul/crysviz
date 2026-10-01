@@ -10,6 +10,12 @@
 // label from line 2, the atoms, a right-handed cell, the new Field unit and
 // periodicity flags, and an isosurface that actually renders. Two of the unit
 // fixtures (a Gradient cube and an orbital cube) check the multi-field paths.
+//
+// Periodicity follows the feature branch's meaning: a cube loads periodic by
+// default; `buildCubeStructure(..., { periodic: false })` (the block prompt,
+// or `loadStructure(..., { periodic: false })`) makes every field a finite
+// block, MO and NVal = 4 cubes included. A .crysviz save and a share payload
+// carry `valueUnit` and `periodic` back.
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -104,8 +110,8 @@ function blobCube() {
   const [f0] = blob.fields;
   H.check('one field, labelled from line 2', blob.fields.length === 1
     && f0.label === 'Electron density from Total SCF Density', JSON.stringify(blob.fields.map((f) => f.label)));
-  H.check('cube field carries valueUnit e/bohr³ and periodic false',
-    f0?.valueUnit === 'e/bohr³' && f0?.periodic === false, JSON.stringify(f0));
+  H.check('cube field carries valueUnit e/bohr³ and loads periodic by default',
+    f0?.valueUnit === 'e/bohr³' && f0?.periodic === true, JSON.stringify(f0));
   H.check('container source is Cube', blob.source === 'Cube', blob.source);
   H.check('the field is active and its isosurface has vertices',
     blob.activeLabel === f0?.label && blob.posVerts > 0 && blob.inScene, JSON.stringify({ a: blob.activeLabel, v: blob.posVerts }));
@@ -139,6 +145,97 @@ function blobCube() {
   H.check('orbital cube gives MO 5 and MO 6', JSON.stringify(mo.fields.map((f) => f.label)) === '["MO 5","MO 6"]',
     JSON.stringify(mo.fields.map((f) => f.label)));
   H.check('orbital cube container says so', mo.source === 'Cube (orbitals)', mo.source);
+
+  // --- periodic vs block on every field (buildCubeStructure / readCubeFile) --
+  const flags = await page.evaluate(async (texts) => {
+    const { buildCubeStructure, readCubeFile } = await import('./io/ReadCubeModule.js');
+    const { parseCube } = await import('./io/cubeParse.js');
+    const out = {};
+    for (const [name, text] of Object.entries(texts)) {
+      const summary = (r) => {
+        const fs = r.structure_with_field.volumetricFields.fields;
+        return {
+          periodic: fs.map((f) => f.periodic),
+          origins: fs.map((f) => JSON.stringify(f.origin)),
+          labels: fs.map((f) => f.label),
+          units: fs.map((f) => f.valueUnit),
+          source: r.structure_with_field.volumetricFields.source,
+        };
+      };
+      out[name] = {
+        read: summary(readCubeFile(text, name)),
+        periodic: summary(buildCubeStructure(parseCube(text), name, { periodic: true })),
+        block: summary(buildCubeStructure(parseCube(text), name, { periodic: false })),
+      };
+    }
+    return out;
+  }, { blob: blobCube(), grad: fixture('gradient_nval4.cube'), mo: fixture('mo_two_orbitals.cube') });
+  for (const [name, r] of Object.entries(flags)) {
+    H.check(`${name}: readCubeFile and { periodic: true } give periodic === true on every field`,
+      [...r.read.periodic, ...r.periodic.periodic].every((p) => p === true), JSON.stringify(r));
+    H.check(`${name}: { periodic: false } gives periodic === false on every field, one shared origin`,
+      r.block.periodic.length > 0 && r.block.periodic.every((p) => p === false)
+        && new Set(r.block.origins).size === 1, JSON.stringify(r.block));
+    H.check(`${name}: labels and units do not depend on the layout`,
+      JSON.stringify(r.block.labels) === JSON.stringify(r.read.labels)
+        && JSON.stringify(r.block.units) === JSON.stringify(r.read.units), JSON.stringify(r));
+  }
+  H.check('MO cube built as a block keeps one field per orbital and its source',
+    flags.mo.block.periodic.length === 2 && flags.mo.block.source === 'Cube (orbitals)', JSON.stringify(flags.mo.block));
+  H.check('NVal = 4 cube built as a block keeps four fields', flags.grad.block.periodic.length === 4,
+    JSON.stringify(flags.grad.block));
+
+  // --- .crysviz save -> load, and the share payload restore -----------------
+  const roundTrip = await page.evaluate(async (text) => {
+    const cv = await import('./core/crystal-viewer.js');
+    const { captureState, applySharedState, waitForStateRestoration } = await import('./ui/ShareModule.js');
+    const { fileBrowser } = await import('./state/store.js');
+    const fieldsNow = () => fileBrowser.selectedStructure.volumetricFields.fields
+      .map((f) => ({ periodic: f.periodic, valueUnit: f.valueUnit, origin: f.origin }));
+    const out = {};
+    for (const periodic of [true, false]) {
+      await cv.loadStructure(text, `rt-${periodic}.cub`, false, '', { periodic });
+      const before = fieldsNow();
+      // What the Save panel's .crysviz button writes (ui/SavePanel.js).
+      const saved = JSON.stringify({ format: 'crysviz', ...captureState({ includeFrames: true, includeFields: true }) }, null, 2);
+      const savedFields = JSON.parse(saved).fields.fields;
+      // Each key once per field in the saved text, not only in the parsed object.
+      const keyCounts = ['"periodic": ', '"valueUnit": '].map((k) => saved.split(k).length - 1);
+      await cv.loadStructure(saved, `rt-${periodic}.crysviz`);
+      out[periodic] = { before, savedFields: savedFields.map((f) => ({ periodic: f.periodic, valueUnit: f.valueUnit })),
+        keyCounts, fieldCount: savedFields.length, after: fieldsNow() };
+    }
+    // The share-payload restorer with tampered values (share links are untrusted).
+    const state = captureState({ includeFrames: true, includeFields: true });
+    const tampered = {};
+    for (const [key, value] of Object.entries({ str: 'false', zero: 0, literal: false })) {
+      const copy = JSON.parse(JSON.stringify(state));
+      copy.fields.fields[0].periodic = value;
+      if (key === 'str') copy.fields.fields[0].valueUnit = { evil: true };
+      applySharedState(copy);
+      await waitForStateRestoration();
+      tampered[key] = fieldsNow()[0];
+    }
+    return { out, tampered };
+  }, blobCube());
+  for (const periodic of ['true', 'false']) {
+    const r = roundTrip.out[periodic];
+    H.check(`.crysviz round trip (periodic ${periodic}) keeps valueUnit and periodic`,
+      r.after.length === r.before.length && r.after.every((f, i) => f.periodic === r.before[i].periodic
+        && f.valueUnit === r.before[i].valueUnit && f.valueUnit === 'e/bohr³'
+        && f.periodic === (periodic === 'true')), JSON.stringify(r));
+    H.check(`.crysviz (periodic ${periodic}) emits periodic and valueUnit once per field`,
+      r.keyCounts.every((n) => n === r.fieldCount), JSON.stringify(r.keyCounts));
+  }
+  H.check('share payload: periodic "false" (a string) or 0 restores a periodic field',
+    roundTrip.tampered.str.periodic === true && roundTrip.tampered.zero.periodic === true,
+    JSON.stringify(roundTrip.tampered));
+  H.check('share payload: a literal false restores a block', roundTrip.tampered.literal.periodic === false,
+    JSON.stringify(roundTrip.tampered.literal));
+  H.check('share payload: a non-string valueUnit is dropped', roundTrip.tampered.str.valueUnit === null,
+    JSON.stringify(roundTrip.tampered.str));
+  H.check('share payload: a string valueUnit survives', roundTrip.tampered.zero.valueUnit === 'e/bohr³',
+    JSON.stringify(roundTrip.tampered.zero));
 
   // --- a truncated file is refused, not half-loaded -------------------------
   const truncated = await page.evaluate(async (text) => {

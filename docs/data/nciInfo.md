@@ -60,8 +60,11 @@ unit the values are used as they are, and the status line warns about it.
   all-electron density and is the better input for SCF-NCI.
 - λ₂ comes from **second derivatives by finite differences**, so the grid needs to be fine:
   a spacing of about **0.1 Å or less** is recommended. Coarse grids give noisy, broken surfaces.
-- A cube file is not periodic, so its outermost layer of grid points has no neighbour on one side
-  and is left out. CHGCAR grids are periodic and wrap around.
+- A periodic grid (a CHGCAR, or a cube loaded as **Periodic**, the default) wraps around: the
+  outermost layer of grid points takes its neighbours from the opposite face, and the promolecular
+  density includes the atoms' periodic images. A cube loaded as **Not periodic** (a finite block,
+  offered when its atoms lie outside the grid) has no neighbour beyond its outermost layer, so that
+  layer is left out, and only the atoms themselves contribute.
 - Intra/intermolecular filtering is not available; all interactions are shown.
 
 ## Credits
